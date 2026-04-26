@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>background keep picker</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #111; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #hud { position: sticky; top: 0; z-index: 10; padding: 10px;
+    background: rgba(0,0,0,0.92); border-bottom: 1px solid #333;
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #hud .group { display: flex; gap: 8px; align-items: center; }
+  #status { font-size: 13px; color: #cfc; min-width: 200px; }
+  button { background: #2a4; color: #fff; border: 0; padding: 8px 14px;
+    border-radius: 6px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #3b5; }
+  button.secondary { background: #444; }
+  button.secondary:hover { background: #555; }
+  button.danger { background: #a33; }
+  button.danger:hover { background: #b44; }
+  #grid { display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px; padding: 10px; }
+  .card { position: relative; cursor: pointer; user-select: none;
+    border: 3px solid transparent; border-radius: 6px; overflow: hidden;
+    background: #222; aspect-ratio: 440 / 956; }
+  .card img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .card.selected { border-color: #66ff99; box-shadow: 0 0 14px rgba(102,255,153,0.6); }
+  .card.kept-on-disk { border-style: dashed; border-color: #888; }
+  .card.kept-on-disk.selected { border-style: solid; border-color: #66ff99; }
+  .card .label { position: absolute; top: 4px; left: 4px;
+    background: rgba(0,0,0,0.65); padding: 2px 6px; border-radius: 4px;
+    font-size: 11px; font-family: monospace; pointer-events: none; }
+  .card.selected .label { background: rgba(102,255,153,0.95); color: #000; }
+  .card .check { position: absolute; bottom: 6px; right: 6px;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: rgba(0,0,0,0.6); display: flex; align-items: center;
+    justify-content: center; font-size: 14px; font-weight: bold; color: #888; }
+  .card.selected .check { background: #66ff99; color: #000; }
+  #saved-msg { color: #66ff99; font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="status">loading…</div>
+  <div class="group">
+    <button onclick="selectAll()">select all</button>
+    <button onclick="invertSelection()" class="secondary">invert</button>
+    <button onclick="selectNone()" class="danger">clear</button>
+  </div>
+  <div class="group">
+    <button onclick="saveKept()">save kept ➜ backgrounds_kept/</button>
+    <button onclick="clearKept()" class="danger">clear kept dir</button>
+  </div>
+  <div id="saved-msg"></div>
+</div>
+<div id="grid"></div>
+<script>
+let entries = [];
+const selected = new Set();
+
+let _firstLoad = true;
+async function load() {
+  const r = await fetch('/list', { cache: 'no-store' });
+  const j = await r.json();
+  const newEntries = j.files;
+  // First load: pre-select what's already on disk
+  if (_firstLoad) {
+    for (const e of newEntries) if (e.kept) selected.add(e.name);
+    _firstLoad = false;
+  }
+  // On subsequent loads: only re-render if file list actually changed
+  const oldNames = new Set(entries.map(e => e.name));
+  const newNames = new Set(newEntries.map(e => e.name));
+  const sameSet = oldNames.size === newNames.size &&
+                  [...oldNames].every(n => newNames.has(n));
+  entries = newEntries;
+  if (!sameSet) renderGrid();
+  updateStatus(`${entries.length} bgs (${j.already_kept} on disk in keep dir)`);
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const e of entries) {
+    const card = document.createElement('div');
+    card.className = 'card' + (selected.has(e.name) ? ' selected' : '') + (e.kept ? ' kept-on-disk' : '');
+    card.dataset.name = e.name;
+    const idx = e.name.replace('bg-', '').replace('.jpg', '');
+    card.innerHTML = `
+      <img loading="lazy" src="/img/${e.name}" decoding="async">
+      <span class="label">${idx}</span>
+      <span class="check">${selected.has(e.name) ? '✓' : ''}</span>`;
+    card.onclick = () => toggle(e.name, card);
+    frag.appendChild(card);
+  }
+  grid.appendChild(frag);
+}
+
+function toggle(name, card) {
+  if (selected.has(name)) {
+    selected.delete(name);
+    card.classList.remove('selected');
+    card.querySelector('.check').textContent = '';
+  } else {
+    selected.add(name);
+    card.classList.add('selected');
+    card.querySelector('.check').textContent = '✓';
+  }
+  updateStatus();
+}
+
+function selectAll() {
+  for (const e of entries) selected.add(e.name);
+  renderGrid(); updateStatus();
+}
+function selectNone() {
+  selected.clear();
+  renderGrid(); updateStatus();
+}
+function invertSelection() {
+  for (const e of entries) {
+    if (selected.has(e.name)) selected.delete(e.name);
+    else selected.add(e.name);
+  }
+  renderGrid(); updateStatus();
+}
+
+async function saveKept() {
+  const names = Array.from(selected);
+  if (names.length === 0) { alert('nothing selected'); return; }
+  const r = await fetch('/save', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ names })
+  });
+  const d = await r.json();
+  document.getElementById('saved-msg').textContent =
+    `saved ${d.kept} → ${d.dir.split('/').pop()}/`;
+  setTimeout(() => document.getElementById('saved-msg').textContent = '', 4000);
+}
+
+async function clearKept() {
+  if (!confirm('clear backgrounds_kept/ on disk? (selection in this UI is unaffected; you can save again to repopulate)')) return;
+  const r = await fetch('/clear_kept', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+  const d = await r.json();
+  document.getElementById('saved-msg').textContent = `removed ${d.removed} files`;
+  setTimeout(() => document.getElementById('saved-msg').textContent = '', 4000);
+}
+
+function updateStatus(msg) {
+  const status = document.getElementById('status');
+  const base = `${selected.size}/${entries.length} selected`;
+  status.textContent = msg ? `${base} — ${msg}` : base;
+}
+
+load();
+// reload list every 5s so newly-captured images appear without refresh
+setInterval(load, 5000);
+</script>
+</body>
+</html>

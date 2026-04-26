@@ -1,0 +1,28 @@
+# Model weights — keep out of git, distribute via Releases
+*.pt
+*.pth
+
+# Image assets — backgrounds, real test frames, generated dataset, scratch images
+*.png
+*.jpg
+*.jpeg
+
+# Generated training data — re-derive from backgrounds_kept/ via synthesize.py
+dataset/
+backgrounds/
+backgrounds_kept/
+real_pointer_test/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local scratch
+*.swp
+*.tmp
