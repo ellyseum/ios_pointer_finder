@@ -66,7 +66,13 @@ class PointerDataset(Dataset):
     (legacy datasets only).
     """
     def __init__(self, dataset_dir: str, train: bool = True, val_frac: float = 0.1,
-                 val_bg_ids: set[str] | None = None):
+                 val_bg_ids: set[str] | None = None,
+                 augment: bool = False):
+        """augment=True turns on train-time random crop + flip + photometric jitter
+        in __getitem__. This is the highest-leverage anti-overfit
+        change: with only 106 train backgrounds, returning the same baked JPEG
+        every epoch lets the network memorize specific bg textures. Online
+        augmentation breaks the spatial/photometric memorization shortcut."""
         with open(os.path.join(dataset_dir, "labels.jsonl")) as f:
             all_labels = [json.loads(line) for line in f if line.strip()]
 
@@ -90,13 +96,78 @@ class PointerDataset(Dataset):
 
         self.entries = entries
         self.dataset_dir = dataset_dir
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.entries)
 
+    def _apply_train_augment(self, img_native: np.ndarray, e: dict) -> tuple[np.ndarray, dict]:
+        """Train-time augmentation that preserves cursor labels.
+        - Random crop ~7% (each axis) before resize: forces spatial invariance,
+          breaks "this exact pixel pattern means cursor at X" memorization.
+        - Random horizontal flip 50%: doubles effective bg variety; cursor sprite
+          is rotationally symmetric so just mirror x label.
+        - Photometric jitter (brightness, optional small noise): redirects the
+          model away from JPEG-noise memorization that bakes into the static
+          dataset.
+        Returns (cropped_image, modified_label_dict). Label dict has updated
+        (x, y) and possibly downgraded has_cursor=0 if cursor cropped out."""
+        h, w = img_native.shape[:2]
+        # Random crop window: keep at least 93% of each axis
+        max_crop_x = int(w * 0.07)
+        max_crop_y = int(h * 0.07)
+        crop_x0 = random.randint(0, max_crop_x)
+        crop_y0 = random.randint(0, max_crop_y)
+        crop_x1 = w - random.randint(0, max_crop_x)
+        crop_y1 = h - random.randint(0, max_crop_y)
+        img = img_native[crop_y0:crop_y1, crop_x0:crop_x1]
+        crop_w = crop_x1 - crop_x0
+        crop_h = crop_y1 - crop_y0
+
+        new_label = dict(e)
+        if e["has_cursor"]:
+            x_in_crop = e["x"] - crop_x0
+            y_in_crop = e["y"] - crop_y0
+            if (x_in_crop < 0 or x_in_crop >= crop_w
+                    or y_in_crop < 0 or y_in_crop >= crop_h):
+                # cursor was cropped out — relabel as negative
+                new_label["has_cursor"] = 0
+                new_label["x"] = -1
+                new_label["y"] = -1
+            else:
+                new_label["x"] = x_in_crop
+                new_label["y"] = y_in_crop
+
+        # Horizontal flip (cursor is symmetric — just mirror x)
+        if random.random() < 0.5:
+            img = img[:, ::-1].copy()
+            if new_label["has_cursor"]:
+                new_label["x"] = crop_w - 1 - new_label["x"]
+
+        # Photometric: brightness jitter (mild — synth already has ±15% baked)
+        # plus optional small additive noise.
+        b = random.uniform(0.92, 1.08)
+        img = np.clip(img.astype(np.float32) * b, 0, 255).astype(np.uint8)
+        if random.random() < 0.3:
+            noise = np.random.normal(0, 1.2, img.shape).astype(np.float32)
+            img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+        # Now resize the crop to TRAIN_W x TRAIN_H. Update label scaling so
+        # x/y are still in NATIVE-pixel space (caller divides by NATIVE_W/H).
+        # We rescale x_in_crop → x_in_native_equivalent so the existing
+        # downstream xn = e["x"] / NATIVE_W normalization still produces the
+        # correct in-image position [0, 1] of the cropped frame interpreted
+        # as native-resolution.
+        if new_label["has_cursor"]:
+            new_label["x"] = int(round(new_label["x"] * NATIVE_W / crop_w))
+            new_label["y"] = int(round(new_label["y"] * NATIVE_H / crop_h))
+        return img, new_label
+
     def __getitem__(self, i: int):
         e = self.entries[i]
         img = cv2.imread(os.path.join(self.dataset_dir, e["path"]))
+        if self.augment:
+            img, e = self._apply_train_augment(img, e)
         img = cv2.resize(img, (TRAIN_W, TRAIN_H), interpolation=cv2.INTER_AREA)
         # to torch CHW float32 in [0, 1]
         x = torch.from_numpy(img.astype(np.float32) / 255.0).permute(2, 0, 1)
@@ -129,17 +200,20 @@ class PointerNet(nn.Module):
     Confidence head: predicts log-probability that any cursor is in frame, from
     a global-pooled sibling branch.
     """
-    def __init__(self):
+    def __init__(self, dropout_p: float = 0.10):
         super().__init__()
         # 3 stride-2 blocks → 1/8 downsample. With 46-px cursor at 1/4 train
         # resolution = 11.5 px, at 1/8 feature map = ~5-6 pixel peak. Was 4
         # blocks (1/16) which gave only ~3-px peak — too small to learn.
+        # v0.3.1: Dropout2d after the last two conv blocks.
         self.backbone = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
             nn.Conv2d(64, 96, 3, stride=2, padding=1), nn.BatchNorm2d(96), nn.ReLU(inplace=True),
             nn.Conv2d(96, 128, 3, stride=1, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Dropout2d(p=dropout_p),
             nn.Conv2d(128, 128, 3, stride=1, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Dropout2d(p=dropout_p),
         )
         # Heatmap head: 1-channel score map at 1/16 resolution
         self.heatmap_head = nn.Conv2d(128, 1, 1)
@@ -194,10 +268,12 @@ def train_loop(args):
     if device.type == "cuda":
         print(f"  {torch.cuda.get_device_name(0)}")
 
-    train_ds = PointerDataset(args.dataset, train=True, val_frac=args.val_frac)
+    train_ds = PointerDataset(args.dataset, train=True, val_frac=args.val_frac,
+                              augment=args.augment)
     val_ds = PointerDataset(args.dataset, train=False, val_frac=args.val_frac,
-                            val_bg_ids=train_ds.val_bg_ids)
-    print(f"train: {len(train_ds)}  val: {len(val_ds)}  split: {train_ds.split_kind}")
+                            val_bg_ids=train_ds.val_bg_ids, augment=False)
+    print(f"train: {len(train_ds)}  val: {len(val_ds)}  split: {train_ds.split_kind}  "
+          f"train_augment={args.augment}")
     if train_ds.val_bg_ids:
         print(f"  val bgs ({len(train_ds.val_bg_ids)}): {sorted(train_ds.val_bg_ids)[:6]}...")
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
@@ -224,7 +300,7 @@ def train_loop(args):
         print(f"resumed from {args.resume} (was epoch {prev_epoch}, "
               f"val_pos_err={resume_best:.1f}px)")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
     # Loss weights (v0.3 — v0.3 fixes)
@@ -387,12 +463,22 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", default=DATASET_DIR)
     p.add_argument("--weights-out", default=WEIGHTS_PATH)
-    p.add_argument("--epochs", type=int, default=30)
+    p.add_argument("--epochs", type=int, default=15,
+                   help="v0.3.1 default 15 — overfit window observed past ep 10 on v0.3, "
+                        "augmentation should extend that but tighter T_max keeps LR "
+                        "from annealing into ultra-low values that lock in memorization")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--weight-decay", type=float, default=1e-3,
+                   help="v0.3.1 bumped from 1e-4 → 1e-3: "
+                        "middle ground between Codex (1e-3) and Gemini (1e-2)")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--val-frac", type=float, default=0.10,
                    help="fraction of bg_ids to hold out for validation (bg-level split)")
+    p.add_argument("--augment", action="store_true", default=True,
+                   help="enable train-time random crop + flip + photometric jitter "
+                        "(v0.3.1 default ON — disable with --no-augment for ablation)")
+    p.add_argument("--no-augment", action="store_false", dest="augment")
     p.add_argument("--resume", default="",
                    help="load weights from this file before training (continues training "
                         "instead of starting from scratch). Optimizer + LR schedule reset, "
