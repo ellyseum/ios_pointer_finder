@@ -104,7 +104,7 @@ def evaluate_on_dir(model: PointerNet, paths: list[str], device: torch.device,
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--v02", default=os.path.join(ROOT, "pointer_model_v0.2.pt"))
+    p.add_argument("--v02", default=os.path.join(ROOT, "pointer_model_v0.2.0.pt"))
     p.add_argument("--v03", default=os.path.join(ROOT, "pointer_model.pt"))
     p.add_argument("--real-dir", default=REAL_DIR)
     p.add_argument("--bg-pool", default=BG_POOL,
