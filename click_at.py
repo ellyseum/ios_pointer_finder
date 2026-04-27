@@ -130,6 +130,20 @@ def _parabolic_subpixel(hm: np.ndarray, ix: int, iy: int) -> tuple[float, float]
 
 # ---------- frame source ----------
 
+def _safe_sorted_ring() -> list[tuple[float, str]]:
+    """List the ring as (mtime, path) tuples, newest first, tolerating
+    files that get rotated out between glob and stat (multifilesink with
+    max-files=8 deletes oldest as it writes new)."""
+    pairs: list[tuple[float, str]] = []
+    for f in glob.glob(JPEG_GLOB):
+        try:
+            pairs.append((os.path.getmtime(f), f))
+        except OSError:
+            continue
+    pairs.sort(reverse=True)
+    return pairs
+
+
 def _newest_finalized_frame(after_t_wall: float = 0.0,
                              timeout: float = WAIT_FRAME_TIMEOUT_S) -> str | None:
     """Return path of the 2nd-newest JPEG (which is finalized — files[0] may
@@ -137,34 +151,38 @@ def _newest_finalized_frame(after_t_wall: float = 0.0,
     comparison since os.path.getmtime is wall-clock; deadline uses monotonic."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        files = sorted(glob.glob(JPEG_GLOB), key=os.path.getmtime, reverse=True)
-        if len(files) >= 2 and os.path.getmtime(files[1]) > after_t_wall:
-            return files[1]
+        ring = _safe_sorted_ring()
+        if len(ring) >= 2 and ring[1][0] > after_t_wall:
+            return ring[1][1]
         time.sleep(0.02)
     return None
 
 
 def _pipeline_alive() -> bool:
-    files = sorted(glob.glob(JPEG_GLOB), key=os.path.getmtime, reverse=True)
-    if not files:
+    ring = _safe_sorted_ring()
+    if not ring:
         return False
-    return (time.time() - os.path.getmtime(files[0])) < PIPELINE_STALE_S
+    return (time.time() - ring[0][0]) < PIPELINE_STALE_S
 
 
 # ---------- hands API ----------
 
-def _move_rel(dx: int, dy: int, step: int = 4, delay_ms: int = 3) -> None:
+def _move_rel(dx: int, dy: int, step: int = 4, delay_ms: int = 3,
+              timeout: float = 20.0) -> None:
+    """Send a relative-move command. BLE HID is slow (≈1ms per HID step plus
+    BLE write latency) so timeout needs to scale with distance — a 700 px
+    diagonal move easily exceeds 2s. 20s gives plenty of headroom."""
     import requests
     requests.post(
         f"{HANDS_URL}/move_rel",
         json={"dx": int(dx), "dy": int(dy), "step": step, "delay_ms": delay_ms},
-        timeout=2.0,
+        timeout=timeout,
     )
 
 
 def _click(hold_ms: int = 60) -> None:
     import requests
-    requests.post(f"{HANDS_URL}/click", json={"hold_ms": hold_ms}, timeout=2.0)
+    requests.post(f"{HANDS_URL}/click", json={"hold_ms": hold_ms}, timeout=5.0)
 
 
 def _hands_alive() -> bool:
@@ -217,6 +235,79 @@ def click_at(target_x: int, target_y: int,
     t_last_move: float = 0.0  # wall-clock of last move command; gates frame freshness
     lost_streak = 0
 
+    # Per-axis gain — observed_native_px / commanded_phone_px.
+    # iOS Tracking Speed makes /move_rel scale unpredictable; we learn it live.
+    # Initial guess 0.15 (rough average from earlier observations 0.1-0.5).
+    # Updated via probe move below + per-iter EMA refinement.
+    gain_x: float = 0.15
+    gain_y: float = 0.15
+    GAIN_MIN, GAIN_MAX = 0.03, 3.0
+    GAIN_EMA_ALPHA = 0.4   # weight for new sample vs prior gain
+    PROBE_PHONE_PX = 80    # known probe magnitude
+    MIN_OBSERVED_FOR_GAIN = 6  # below this, motion is too small/noisy to trust
+
+    def _update_gain(commanded: int, observed: int, prior: float) -> float:
+        """EMA-blend a new gain sample with prior. Reject when sign mismatches
+        (means cursor was clamped at edge or hit a snap-target) or motion is
+        too small (sub-noise observation)."""
+        if abs(commanded) < 10 or abs(observed) < MIN_OBSERVED_FOR_GAIN:
+            return prior
+        if (commanded > 0) != (observed > 0):
+            return prior  # sign mismatch — discard
+        sample = observed / commanded
+        sample = max(GAIN_MIN, min(GAIN_MAX, sample))
+        return (1 - GAIN_EMA_ALPHA) * prior + GAIN_EMA_ALPHA * sample
+
+    # ---- probe phase: send a known move toward target, measure observed delta ----
+    snap = _newest_finalized_frame(after_t_wall=0.0)
+    if snap is None:
+        return {"ok": False, "reason": "stale_pipeline", "iters": 0,
+                "final_xy": None, "final_err": None, "history": history}
+    img = cv2.imread(snap)
+    res0 = finder.find(img) if img is not None else None
+    if res0 is not None and (res0[2] >= CONF_THRESHOLD and res0[3] >= PEAK_THRESHOLD):
+        sx0, sy0, _, _ = res0
+        sign_x = 1 if target_x >= sx0 else -1
+        sign_y = 1 if target_y >= sy0 else -1
+        probe_dx = sign_x * PROBE_PHONE_PX
+        probe_dy = sign_y * PROBE_PHONE_PX
+        if verbose:
+            print(f"  probe: cursor=({sx0},{sy0}) → /move_rel({probe_dx:+d},{probe_dy:+d})")
+        t_last_move = time.time()
+        try:
+            _move_rel(probe_dx, probe_dy)
+        except Exception as e:
+            if verbose: print(f"  probe move err: {e}")
+        snap1 = _newest_finalized_frame(after_t_wall=t_last_move)
+        if snap1 is not None:
+            img1 = cv2.imread(snap1)
+            res1 = finder.find(img1) if img1 is not None else None
+            if res1 is not None:
+                sx1, sy1, _, _ = res1
+                obs_dx = sx1 - sx0
+                obs_dy = sy1 - sy0
+                gain_x = _update_gain(probe_dx, obs_dx, gain_x)
+                gain_y = _update_gain(probe_dy, obs_dy, gain_y)
+                if verbose:
+                    print(f"  probe result: observed=({obs_dx:+d},{obs_dy:+d})"
+                          f" → gain_x={gain_x:.3f} gain_y={gain_y:.3f}")
+
+    # ---- main loop ----
+    prev_cx: int | None = None
+    prev_cy: int | None = None
+    prev_peak: float | None = None
+    prev_cmd_dx: int | None = None
+    prev_cmd_dy: int | None = None
+    static_lock_streak = 0
+
+    # Static-feature lock detection: when the model is locked onto a UI
+    # distractor (cursor auto-hidden, etc.), the heatmap peak is identical
+    # to many decimal places frame-to-frame because it's a constant scene
+    # feature. Real cursor detections vary slightly from compression noise.
+    STATIC_LOCK_PEAK_EPS = 1e-5
+    STATIC_LOCK_POS_EPS = 1     # native px
+    MIN_CMD_FOR_LOCK_CHECK = 50  # only flag lock if we actually commanded a meaningful move
+
     for i in range(max_iters):
         snap = _newest_finalized_frame(after_t_wall=t_last_move)
         if snap is None:
@@ -233,44 +324,93 @@ def click_at(target_x: int, target_y: int,
                     "final_xy": None, "final_err": None, "history": history}
         cx, cy, conf, peak = result
 
-        # cursor-lost path → jiggle + retry
-        if conf < CONF_THRESHOLD or peak < PEAK_THRESHOLD:
+        # Static-lock detection: meaningful command issued + position unchanged
+        # + peak invariant to high precision = model is hallucinating on a
+        # static UI element, not tracking a real cursor.
+        is_static_lock = False
+        if (prev_cx is not None and prev_peak is not None
+                and prev_cmd_dx is not None and prev_cmd_dy is not None):
+            obs_dx = cx - prev_cx
+            obs_dy = cy - prev_cy
+            commanded_meaningful = (abs(prev_cmd_dx) >= MIN_CMD_FOR_LOCK_CHECK
+                                    or abs(prev_cmd_dy) >= MIN_CMD_FOR_LOCK_CHECK)
+            no_motion = abs(obs_dx) <= STATIC_LOCK_POS_EPS and abs(obs_dy) <= STATIC_LOCK_POS_EPS
+            invariant_peak = abs(peak - prev_peak) < STATIC_LOCK_PEAK_EPS
+            is_static_lock = commanded_meaningful and no_motion and invariant_peak
+
+            # EMA-refine gain ONLY when observed motion is non-trivial (avoid
+            # snap-to-item or edge-clamp from collapsing gain toward zero).
+            if not no_motion:
+                gain_x = _update_gain(prev_cmd_dx, obs_dx, gain_x)
+                gain_y = _update_gain(prev_cmd_dy, obs_dy, gain_y)
+
+        # cursor-lost path → jiggle + retry. Treat static-lock as a lost
+        # detection (model is wrong; jiggle will move cursor enough to
+        # break out of any UI-element false positive).
+        cursor_lost = (conf < CONF_THRESHOLD) or (peak < PEAK_THRESHOLD)
+        if cursor_lost or is_static_lock:
             lost_streak += 1
+            if is_static_lock:
+                static_lock_streak += 1
+            note = "static_lock" if is_static_lock else "lost"
             history.append({"iter": i, "cx": cx, "cy": cy, "conf": conf, "peak": peak,
-                            "dx": None, "dy": None, "note": "lost"})
+                            "dx": None, "dy": None, "note": note})
             if verbose:
-                print(f"  iter {i}: conf={conf:.2f} peak={peak:.2f} → cursor lost"
+                print(f"  iter {i}: conf={conf:.2f} peak={peak:.4f} → {note}"
                       f" (streak {lost_streak})")
             if lost_streak >= 3:
-                return {"ok": False, "reason": "cursor_lost", "iters": i + 1,
+                reason = "static_lock" if static_lock_streak >= 2 else "cursor_lost"
+                return {"ok": False, "reason": reason, "iters": i + 1,
                         "final_xy": None, "final_err": None, "history": history}
             if allow_jiggle:
                 t_last_move = _jiggle_to_wake()
+            # After jiggle, force the next iteration to NOT think it's still
+            # locked — clear the prev tracking so static-lock re-evaluates fresh.
+            prev_cx = prev_cy = prev_peak = None
+            prev_cmd_dx = prev_cmd_dy = None
             continue
         lost_streak = 0
+        static_lock_streak = 0
 
         dx = target_x - cx
         dy = target_y - cy
         dist = float(np.hypot(dx, dy))
         history.append({"iter": i, "cx": cx, "cy": cy, "conf": conf, "peak": peak,
-                        "dx": dx, "dy": dy, "dist": dist})
+                        "dx": dx, "dy": dy, "dist": dist,
+                        "gain_x": round(gain_x, 3), "gain_y": round(gain_y, 3)})
         if verbose:
             print(f"  iter {i}: cursor=({cx},{cy}) target=({target_x},{target_y})"
-                  f" delta=({dx:+d},{dy:+d}) dist={dist:.1f}px conf={conf:.2f}")
+                  f" delta=({dx:+d},{dy:+d}) dist={dist:.1f}px"
+                  f" gain=({gain_x:.2f},{gain_y:.2f}) conf={conf:.2f}")
 
         if dist < tolerance:
             time.sleep(SETTLE_BEFORE_CLICK_S)
             _click()
             return {"ok": True, "reason": "converged", "iters": i + 1,
-                    "final_xy": (cx, cy), "final_err": dist, "history": history}
+                    "final_xy": (cx, cy), "final_err": dist, "history": history,
+                    "gain": (round(gain_x, 3), round(gain_y, 3))}
 
-        # send corrective move (absolute pixel vector → BLE HID phone-px)
+        # Compute corrective move in phone-px: invert the gain so a delta of
+        # N native px gets sent as N/gain phone-px. Cap per-iteration command
+        # at ±800 (was 1500) — keeps each BLE move under ~3s so the loop can
+        # self-correct quickly instead of one giant move that overshoots.
+        cmd_dx = int(round(dx / gain_x))
+        cmd_dy = int(round(dy / gain_y))
+        cmd_dx = max(-800, min(800, cmd_dx))
+        cmd_dy = max(-800, min(800, cmd_dy))
+        prev_cx, prev_cy = cx, cy
+        prev_peak = peak
+        prev_cmd_dx, prev_cmd_dy = cmd_dx, cmd_dy
         t_last_move = time.time()
-        _move_rel(dx, dy)
+        try:
+            _move_rel(cmd_dx, cmd_dy)
+        except Exception as e:
+            if verbose: print(f"  move err: {e}")
 
     return {"ok": False, "reason": "max_iters", "iters": max_iters,
             "final_xy": (cx, cy) if 'cx' in dir() else None,
             "final_err": dist if 'dist' in dir() else None,
+            "gain": (round(gain_x, 3), round(gain_y, 3)),
             "history": history}
 
 
