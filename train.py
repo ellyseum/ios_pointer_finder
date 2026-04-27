@@ -445,15 +445,19 @@ def train_loop(args):
                     "version": version}
             # Rolling pointer: pointer_model.pt is always the best so far
             torch.save(ckpt, args.weights_out)
-            # Versioned snapshot: pointer_model_v{VERSION}.pt — never gets
-            # overwritten by future versions since the filename includes the
-            # current VERSION. Bump VERSION before training a new variant.
-            versioned_path = os.path.join(
+            # Per-best snapshot tagged with version AND val_pos_err. Each new
+            # best creates a NEW file (no overwrite), so the filename history
+            # of the run is visible at a glance — e.g. eyeballing the dir
+            # shows the descent: pointer_model_v0.3.1_64.2px.pt → ..._43.0px.pt
+            # → ..._30.8px.pt. The smallest-err filename is always equivalent
+            # to the rolling pointer_model.pt of the same version.
+            err_path = os.path.join(
                 os.path.dirname(args.weights_out),
-                f"pointer_model_v{version}.pt")
-            torch.save(ckpt, versioned_path)
+                f"pointer_model_v{version}_{mean_pos_err:.1f}px.pt")
+            torch.save(ckpt, err_path)
             print(f"  ✓ saved best (val_pos_err={mean_pos_err:.1f}px) → "
-                  f"{os.path.basename(args.weights_out)} + v{version} snapshot")
+                  f"{os.path.basename(args.weights_out)} + "
+                  f"{os.path.basename(err_path)}")
 
     print(f"\nfinal best val_pos_err: {best_val_err:.1f}px")
     return 0
