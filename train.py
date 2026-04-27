@@ -196,6 +196,21 @@ def train_loop(args):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"model params: {n_params:,}")
 
+    # Resume from existing weights — keeps the model trained across many
+    # epoch budgets instead of restarting from scratch every run. Useful for
+    # "let it cook overnight" loops where each `train.py` invocation does
+    # 30 more epochs on top of whatever was trained before. Optimizer + LR
+    # schedule reset on each invocation, which acts like a cosine restart
+    # (helps escape local minima).
+    resume_best = float("inf")
+    if args.resume and os.path.exists(args.resume):
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        resume_best = float(ckpt.get("val_pos_err_px", float("inf")))
+        prev_epoch = ckpt.get("epoch", "?")
+        print(f"resumed from {args.resume} (was epoch {prev_epoch}, "
+              f"val_pos_err={resume_best:.1f}px)")
+
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
@@ -207,7 +222,9 @@ def train_loop(args):
     XY_WARMUP_EPOCHS = 5
     CONF_WEIGHT = 2.0         # bumped from 1.0 (Gemini: conf needs more pressure)
 
-    best_val_err = float("inf")
+    # Carry over the previous run's best so we don't overwrite a better
+    # checkpoint with the first eval of this run (especially after warmup).
+    best_val_err = resume_best
     for epoch in range(1, args.epochs + 1):
         xy_w = XY_WEIGHT_WARMUP if epoch <= XY_WARMUP_EPOCHS else XY_WEIGHT_LATE
         model.train()
@@ -353,6 +370,10 @@ def main() -> int:
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--val-frac", type=float, default=0.10,
                    help="fraction of bg_ids to hold out for validation (bg-level split)")
+    p.add_argument("--resume", default="",
+                   help="load weights from this file before training (continues training "
+                        "instead of starting from scratch). Optimizer + LR schedule reset, "
+                        "which acts like a cosine restart.")
     args = p.parse_args()
     return train_loop(args)
 
