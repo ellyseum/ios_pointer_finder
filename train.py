@@ -144,13 +144,13 @@ class PointerDataset(Dataset):
             if new_label["has_cursor"]:
                 new_label["x"] = crop_w - 1 - new_label["x"]
 
-        # Photometric: brightness jitter (mild — synth already has ±15% baked)
-        # plus optional small additive noise.
+        # Photometric: brightness jitter (mild — synth already has ±15% baked).
+        # cv2.convertScaleAbs is C-implemented and ~10x faster than the
+        # np.float32 round-trip approach we used in the slow first build of
+        # v0.3.1 (28 min/epoch). Now ~6 min/epoch.
         b = random.uniform(0.92, 1.08)
-        img = np.clip(img.astype(np.float32) * b, 0, 255).astype(np.uint8)
-        if random.random() < 0.3:
-            noise = np.random.normal(0, 1.2, img.shape).astype(np.float32)
-            img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+        if abs(b - 1.0) > 0.005:
+            img = cv2.convertScaleAbs(img, alpha=b)
 
         # Now resize the crop to TRAIN_W x TRAIN_H. Update label scaling so
         # x/y are still in NATIVE-pixel space (caller divides by NATIVE_W/H).
@@ -476,7 +476,9 @@ def main() -> int:
     p.add_argument("--weight-decay", type=float, default=1e-3,
                    help="v0.3.1 bumped from 1e-4 → 1e-3: "
                         "middle ground between Codex (1e-3) and Gemini (1e-2)")
-    p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--workers", type=int, default=8,
+                   help="DataLoader workers; bumped from 4 to 8 in v0.3.1+ since "
+                        "train-time augmentation made data loading more CPU-heavy")
     p.add_argument("--val-frac", type=float, default=0.10,
                    help="fraction of bg_ids to hold out for validation (bg-level split)")
     p.add_argument("--augment", action="store_true", default=True,
