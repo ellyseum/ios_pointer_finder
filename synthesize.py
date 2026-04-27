@@ -1,24 +1,27 @@
 """
 synthesize.py — generate labeled training data for the ios-pointer-finder CNN.
 
+v0.3 mix (v0.3 update):
+  - normal_pos  (default 55%): full-cursor positives, random position with margin
+  - edge_pos    (default 15%): cursor partially clipped at a screen edge,
+                                visible-centroid label, reject if visible
+                                fraction < MIN_VISIBLE_FRAC
+  - hard_neg    (default 15%): "decoy cursor" composites — wrong-size discs,
+                                wrong-alpha discs, hollow rings, ellipses,
+                                doubled-dots, I-beam strokes, white wedges.
+                                has_cursor=0 — model must learn "cursor-shaped
+                                but NOT a real cursor" rejection.
+  - plain_neg   (default 15%): unmodified background, has_cursor=0.
+
 Inputs:
   - backgrounds_kept/*.png   real iPhone screen captures, cursor-free
-  - at_dot.png               cursor sprite alpha mask (RGB ignored — we
-                              synthesize the cursor color per-instance based
-                              on local bg luminance, since iOS uses contrast-
-                              adaptive cursor tinting)
 
 Outputs:
-  - dataset/imgs/NNNNNN.jpg  composited training image
-  - dataset/labels.jsonl     one JSON per line: {"path", "x", "y", "has_cursor", "lum_under"}
+  - dataset/imgs/NNNNNN.jpg
+  - dataset/labels.jsonl     {path, x, y, has_cursor, sample_type, bg_id, ...}
 
-Each background yields N positive samples (cursor at random position) plus
-some negative samples (no cursor — for confidence head training). The cursor
-color is chosen per-sample to maximize contrast vs. the bg patch under the
-cursor (matches iOS behavior we observed: dark cursor on bright bg, light
-cursor on dark bg, white cursor on red, etc.).
-
-Augmentations: brightness ±15%, slight blur, JPEG quality jitter 80-95.
+bg_id and sample_type fields are read by train.py for bg-level val split and
+for sliced metrics (FPR per neg type, pos error per pos type).
 """
 
 from __future__ import annotations
@@ -35,82 +38,185 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BG_DIR = os.path.join(ROOT, "backgrounds_kept")
-DOT_PATH = os.path.join(ROOT, "at_dot.png")
 OUT_DIR = os.path.join(ROOT, "dataset")
 
-# Native iPhone H264 stream resolution (mirror pipeline output)
+# Native iPhone H264 stream resolution
 W, H = 994, 2160
-# Empirically measured by counting cursor pixels in real native-res capture:
-# the iOS BLE cursor is ~46 px diameter at 994x2160. Sample with small jitter
-# (±4 px) so the model is robust to anti-aliasing / encoding artifacts that
-# blur the apparent edge slightly.
+
+# Real cursor is ~46 px diameter — measured empirically from native captures.
+# Sample with small jitter for anti-alias / encoding noise robustness.
 CURSOR_PX_MIN = 42
 CURSOR_PX_MAX = 50
-# Empirical match to real cursor: α=0.25 + shift=0.5 + edge_falloff=0.10
-# yields c ≈ 205 on dark navy bg, matching observed cursor center brightness
-# (~70 BGR) with bg show-through that looks like real iOS rendering.
+# Real cursor: peak alpha ≈ 0.25 with edge falloff ≈ 0.10 — calibrated against
+# observed bg-00000 cursor (center brightness ~70 over bg lum ~49).
 CURSOR_ALPHA_PEAK = 0.25
+CURSOR_EDGE_FALLOFF = 0.10
+
+# Edge cases: reject if less than this fraction of the cursor sprite is
+# inside the image bounds (sliver-only is unusable training signal — the
+# model can't reliably localize a 5-pixel arc, and the visible-centroid
+# label gets dominated by the edge intersection geometry).
+MIN_VISIBLE_FRAC = 0.20
+
+# Hard-negative decoy types
+HARD_NEG_TYPES = ["wrong_size_disc", "wrong_alpha_disc", "ring",
+                  "ellipse", "doubled_dot", "ibeam", "wedge"]
 
 
-def make_pointer_mask(diameter: int = 46, peak_alpha: float = CURSOR_ALPHA_PEAK,
-                     edge_falloff: float = 0.10) -> np.ndarray:
-    """
-    Generate a clean anti-aliased disc mask procedurally — round, no checkmark,
-    no square artifacts. Returns (H, W) float32 in [0, 1].
+# ============================================================
+# Cursor sprite (the real-deal alpha mask)
+# ============================================================
 
-    edge_falloff: fraction of radius over which alpha smoothly drops 1→0 at
-    the edge. 0.10 = 10% softness, gives subtle anti-aliased edge without
-    making the cursor look fuzzy.
-    """
+def make_pointer_mask(diameter: int = 46,
+                     peak_alpha: float = CURSOR_ALPHA_PEAK,
+                     edge_falloff: float = CURSOR_EDGE_FALLOFF) -> np.ndarray:
+    """Procedural anti-aliased disc — round, soft edges, no checkmark/text."""
     r = diameter / 2.0
     yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing='ij')
     cy = cx = (diameter - 1) / 2.0
     dist = np.sqrt((yy - cy)**2 + (xx - cx)**2)
-    # Smooth edge: alpha = 1 inside (r * (1-falloff)), 0 outside r, smoothstep between
     inner = r * (1.0 - edge_falloff)
     t = np.clip((r - dist) / (r - inner + 1e-6), 0.0, 1.0)
-    # smoothstep for nicer falloff
-    alpha = t * t * (3.0 - 2.0 * t)
+    alpha = t * t * (3.0 - 2.0 * t)  # smoothstep
     return (alpha * peak_alpha).astype(np.float32)
 
 
+# ============================================================
+# Hard-negative (decoy cursor) sprite generators
+# ============================================================
+
+def make_decoy_wrong_size(scale: float | None = None) -> np.ndarray:
+    """Disc with wrong diameter — too small (~25 px) or too big (~75 px).
+    Same color/alpha logic, just wrong size."""
+    if scale is None:
+        scale = random.choice([0.5, 0.55, 0.6, 1.5, 1.65, 1.8])
+    d = max(8, int(round(46 * scale)))
+    return make_pointer_mask(diameter=d, peak_alpha=CURSOR_ALPHA_PEAK)
+
+
+def make_decoy_wrong_alpha() -> np.ndarray:
+    """Disc with right size but very different alpha — too transparent or too opaque."""
+    d = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
+    a = random.choice([0.06, 0.10, 0.55, 0.70, 0.85])
+    return make_pointer_mask(diameter=d, peak_alpha=a)
+
+
+def make_decoy_ring(diameter: int | None = None) -> np.ndarray:
+    """Hollow ring instead of solid disc."""
+    if diameter is None:
+        diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX + 8)
+    r = diameter / 2.0
+    yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing='ij')
+    cy = cx_ = (diameter - 1) / 2.0
+    dist = np.sqrt((yy - cy)**2 + (xx - cx_)**2)
+    ring_w = random.randint(4, 8)
+    inner_r = max(2, r - ring_w)
+    in_outer = (dist <= r).astype(np.float32)
+    in_inner = (dist <= inner_r).astype(np.float32)
+    ring = in_outer - in_inner
+    ring = cv2.GaussianBlur(ring, (3, 3), 0)
+    return (ring * CURSOR_ALPHA_PEAK).astype(np.float32)
+
+
+def make_decoy_ellipse() -> np.ndarray:
+    """Ellipse — same general shape but stretched."""
+    h = random.randint(CURSOR_PX_MIN - 4, CURSOR_PX_MAX + 4)
+    aspect = random.uniform(1.4, 2.2)
+    w = int(round(h * aspect))
+    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+    cy = (h - 1) / 2.0; cx_ = (w - 1) / 2.0
+    rx = w / 2.0; ry = h / 2.0
+    dist_n = ((yy - cy) / max(1.0, ry)) ** 2 + ((xx - cx_) / max(1.0, rx)) ** 2
+    inner = (1.0 - 0.10) ** 2
+    t = np.clip((1.0 - dist_n) / (1.0 - inner + 1e-6), 0.0, 1.0)
+    alpha = t * t * (3.0 - 2.0 * t)
+    return (alpha * CURSOR_ALPHA_PEAK).astype(np.float32)
+
+
+def make_decoy_doubled_dot() -> np.ndarray:
+    """Two small dots side-by-side — 'cursor with reflection' look-alike."""
+    d_each = random.randint(20, 32)
+    gap = random.randint(2, 8)
+    canvas_w = d_each * 2 + gap
+    canvas_h = d_each
+    canvas = np.zeros((canvas_h, canvas_w), dtype=np.float32)
+    dot = make_pointer_mask(diameter=d_each, peak_alpha=CURSOR_ALPHA_PEAK)
+    # Dot is square (d_each x d_each); paste at left and right
+    canvas[:, :d_each] = dot
+    canvas[:, d_each + gap:d_each + gap + d_each] = dot * random.uniform(0.6, 1.0)
+    return canvas
+
+
+def make_decoy_ibeam() -> np.ndarray:
+    """Vertical text-cursor I-beam — thin vertical line with optional caps."""
+    h = random.randint(36, 56)
+    w = random.randint(3, 6)
+    canvas = np.zeros((h, w + 6), dtype=np.float32)
+    canvas[:, 3:3 + w] = 1.0
+    if random.random() < 0.4:
+        # add caps
+        cap_h = max(1, h // 14)
+        canvas[:cap_h, :] = 0
+        canvas[:cap_h, 1:-1] = 1.0
+        canvas[-cap_h:, :] = 0
+        canvas[-cap_h:, 1:-1] = 1.0
+    canvas = cv2.GaussianBlur(canvas, (3, 3), 0)
+    return (canvas * random.uniform(0.20, 0.45)).astype(np.float32)
+
+
+def make_decoy_wedge() -> np.ndarray:
+    """White triangle/wedge — back-button arrow look-alike."""
+    h = random.randint(24, 44)
+    w = h
+    canvas = np.zeros((h, w), dtype=np.float32)
+    direction = random.choice(['left', 'right', 'up', 'down'])
+    pts = {
+        'left':  np.array([[w-1, 0], [w-1, h-1], [0, h//2]], np.int32),
+        'right': np.array([[0, 0], [0, h-1], [w-1, h//2]], np.int32),
+        'up':    np.array([[0, h-1], [w-1, h-1], [w//2, 0]], np.int32),
+        'down':  np.array([[0, 0], [w-1, 0], [w//2, h-1]], np.int32),
+    }[direction]
+    cv2.fillPoly(canvas, [pts], 1.0)
+    canvas = cv2.GaussianBlur(canvas, (3, 3), 0)
+    return (canvas * random.uniform(0.30, 0.55)).astype(np.float32)
+
+
+def make_decoy(decoy_type: str) -> np.ndarray:
+    if decoy_type == "wrong_size_disc":  return make_decoy_wrong_size()
+    if decoy_type == "wrong_alpha_disc": return make_decoy_wrong_alpha()
+    if decoy_type == "ring":             return make_decoy_ring()
+    if decoy_type == "ellipse":          return make_decoy_ellipse()
+    if decoy_type == "doubled_dot":      return make_decoy_doubled_dot()
+    if decoy_type == "ibeam":            return make_decoy_ibeam()
+    if decoy_type == "wedge":            return make_decoy_wedge()
+    raise ValueError(f"unknown decoy type: {decoy_type}")
+
+
+# ============================================================
+# Color and compositing
+# ============================================================
+
 def luminance(bgr_patch: np.ndarray) -> float:
-    """Mean luminance of a BGR patch in [0, 255]."""
     if bgr_patch.size == 0:
         return 128.0
     b, g, r = bgr_patch[..., 0].mean(), bgr_patch[..., 1].mean(), bgr_patch[..., 2].mean()
     return float(0.299 * r + 0.587 * g + 0.114 * b)
 
 
-def pick_cursor_color(bg_patch: np.ndarray) -> tuple[int, int, int]:
-    """
-    iOS contrast-adaptive cursor color.
-
-    Empirically calibrated against real cursor at native res (bg-00000.png):
-    real cursor center lum ≈ 67.7 over bg lum ≈ 49.2 → cursor pulls bg toward
-    midpoint (128) by ~0.5 of the gap. Solving result = c·α + bg·(1-α) with
-    α = CURSOR_ALPHA_PEAK = 0.55 gives the right c per-bg.
-
-    Validated: shift=0.50 produces cursor center brightness within 3 RGB of
-    real on tested frames. This is much subtler than the prior "near-white
-    on dark / near-black on light" rule, which over-shot brightness.
-    """
+def pick_cursor_color(bg_patch: np.ndarray,
+                      alpha: float = CURSOR_ALPHA_PEAK) -> tuple[int, int, int]:
+    """iOS contrast-adaptive cursor color, calibrated to real captures."""
     SHIFT_FRAC = 0.50
-    MIN_CONTRAST = 35  # min RGB delta between cursor center and bg (CRITICAL:
-                       # without this, mid-gray bgs make cursor invisible in
-                       # the rendered result, killing training-data signal).
+    MIN_CONTRAST = 35
     lum = luminance(bg_patch)
-    target_result_lum = lum + (128 - lum) * SHIFT_FRAC
-    # Enforce min contrast: cursor must be at least MIN_CONTRAST away from bg
-    if target_result_lum > lum and target_result_lum - lum < MIN_CONTRAST:
-        target_result_lum = lum + MIN_CONTRAST
-    elif target_result_lum < lum and lum - target_result_lum < MIN_CONTRAST:
-        target_result_lum = lum - MIN_CONTRAST
-    elif abs(target_result_lum - lum) < 1:
-        # bg exactly at midpoint → arbitrarily pick light cursor
-        target_result_lum = lum + MIN_CONTRAST
-    # Invert alpha-over: c = (target - bg*(1-α)) / α
-    c = (target_result_lum - lum * (1 - CURSOR_ALPHA_PEAK)) / CURSOR_ALPHA_PEAK
+    target = lum + (128 - lum) * SHIFT_FRAC
+    if target > lum and target - lum < MIN_CONTRAST:
+        target = lum + MIN_CONTRAST
+    elif target < lum and lum - target < MIN_CONTRAST:
+        target = lum - MIN_CONTRAST
+    elif abs(target - lum) < 1:
+        target = lum + MIN_CONTRAST
+    c = (target - lum * (1 - alpha)) / max(1e-6, alpha)
     c = max(20, min(235, c))
     j = random.randint(-5, 5)
     v = int(round(c)) + j
@@ -118,35 +224,48 @@ def pick_cursor_color(bg_patch: np.ndarray) -> tuple[int, int, int]:
 
 
 def composite(bg: np.ndarray, sprite_alpha: np.ndarray, cx: int, cy: int,
-              cursor_bgr: tuple[int, int, int]) -> np.ndarray:
-    """Alpha-over composite of cursor at (cx, cy) onto bg. In-place return."""
+              color_bgr: tuple[int, int, int]) -> tuple[np.ndarray, int]:
+    """Alpha-over composite at (cx, cy). Returns (bg, visible_pixel_count).
+    visible_pixel_count = pixels of sprite that landed inside image bounds."""
     sh, sw = sprite_alpha.shape
     x0 = cx - sw // 2; y0 = cy - sh // 2
     x1 = x0 + sw; y1 = y0 + sh
-    # Clip to image bounds (cursor partially off-screen ok)
     bx0 = max(0, x0); by0 = max(0, y0)
     bx1 = min(bg.shape[1], x1); by1 = min(bg.shape[0], y1)
     if bx0 >= bx1 or by0 >= by1:
-        return bg
+        return bg, 0
     sx0 = bx0 - x0; sy0 = by0 - y0
     sx1 = sx0 + (bx1 - bx0); sy1 = sy0 + (by1 - by0)
     region = bg[by0:by1, bx0:bx1].astype(np.float32)
-    a = sprite_alpha[sy0:sy1, sx0:sx1, None]  # (h, w, 1)
-    color = np.array(cursor_bgr, dtype=np.float32)[None, None, :]
+    a = sprite_alpha[sy0:sy1, sx0:sx1, None]
+    color = np.array(color_bgr, dtype=np.float32)[None, None, :]
     out = color * a + region * (1.0 - a)
     bg[by0:by1, bx0:bx1] = np.clip(out, 0, 255).astype(np.uint8)
-    return bg
+    visible_px = (bx1 - bx0) * (by1 - by0)
+    return bg, visible_px
+
+
+def visible_centroid(cx: int, cy: int, sw: int, sh: int) -> tuple[int, int]:
+    """Bounding-box centroid of the visible portion of a sprite. Used as the
+    label for edge-clipped cursors so the heatmap target is centered on
+    where the cursor actually appears in the image."""
+    x0 = cx - sw // 2; y0 = cy - sh // 2
+    x1 = x0 + sw; y1 = y0 + sh
+    bx0 = max(0, x0); by0 = max(0, y0)
+    bx1 = min(W, x1); by1 = min(H, y1)
+    cx_v = (bx0 + bx1 - 1) // 2
+    cy_v = (by0 + by1 - 1) // 2
+    return cx_v, cy_v
 
 
 def augment(img: np.ndarray) -> np.ndarray:
     """Brightness ±15%, slight blur, JPEG-recompression noise."""
     img = img.astype(np.float32)
-    img *= random.uniform(0.85, 1.15)  # brightness
+    img *= random.uniform(0.85, 1.15)
     img = np.clip(img, 0, 255).astype(np.uint8)
     if random.random() < 0.3:
         k = random.choice([3, 5])
         img = cv2.GaussianBlur(img, (k, k), 0)
-    # JPEG noise via encode/decode round-trip
     if random.random() < 0.7:
         q = random.randint(78, 95)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])
@@ -155,17 +274,117 @@ def augment(img: np.ndarray) -> np.ndarray:
     return img
 
 
+# ============================================================
+# Sample generators (each returns dict ready for labels.jsonl + the image)
+# ============================================================
+
+def gen_normal_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
+    cx = random.randint(margin, W - margin)
+    cy = random.randint(margin, H - margin)
+    diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
+    sprite_alpha = make_pointer_mask(diameter=diameter)
+    ph, pw = sprite_alpha.shape
+    py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
+    py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
+    bg_patch = bg_orig[py0:py1, px0:px1]
+    color = pick_cursor_color(bg_patch)
+    bg = bg_orig.copy()
+    bg, _vis = composite(bg, sprite_alpha, cx, cy, color)
+    return augment(bg), {
+        "x": cx, "y": cy, "has_cursor": 1, "sample_type": "normal_pos",
+        "lum_under": round(luminance(bg_patch), 1),
+        "cursor_v": color[0], "diameter": diameter,
+    }
+
+
+def gen_edge_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict] | None:
+    """Edge-clipped cursor; returns None if visible fraction < MIN_VISIBLE_FRAC."""
+    edge = random.choice(['left', 'right', 'top', 'bottom'])
+    diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
+    r = diameter // 2
+    edge_offset = random.randint(-r - 3, max(0, margin // 2))
+    if edge == 'left':
+        cx = edge_offset; cy = random.randint(margin, H - margin)
+    elif edge == 'right':
+        cx = W - 1 - edge_offset; cy = random.randint(margin, H - margin)
+    elif edge == 'top':
+        cx = random.randint(margin, W - margin); cy = edge_offset
+    else:
+        cx = random.randint(margin, W - margin); cy = H - 1 - edge_offset
+
+    sprite_alpha = make_pointer_mask(diameter=diameter)
+    ph, pw = sprite_alpha.shape
+    sprite_area = ph * pw
+    py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
+    py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
+    visible_area = max(0, (py1 - py0)) * max(0, (px1 - px0))
+    if visible_area < MIN_VISIBLE_FRAC * sprite_area:
+        return None
+    bg_patch = bg_orig[py0:py1, px0:px1]
+    color = pick_cursor_color(bg_patch)
+    bg = bg_orig.copy()
+    bg, _vis = composite(bg, sprite_alpha, cx, cy, color)
+    label_x, label_y = visible_centroid(cx, cy, pw, ph)
+    return augment(bg), {
+        "x": label_x, "y": label_y, "has_cursor": 1, "sample_type": "edge_pos",
+        "lum_under": round(luminance(bg_patch), 1),
+        "cursor_v": color[0], "diameter": diameter, "edge": edge,
+        "true_center": [cx, cy], "visible_frac": round(visible_area / sprite_area, 3),
+    }
+
+
+def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
+    """Composite a 'decoy cursor' (cursor-shaped but wrong) labeled has_cursor=0.
+    Forces the model to discriminate real vs. lookalike at the heatmap level."""
+    decoy_type = random.choice(HARD_NEG_TYPES)
+    sprite = make_decoy(decoy_type)
+    ph, pw = sprite.shape
+    cx = random.randint(margin, W - margin)
+    cy = random.randint(margin, H - margin)
+    bg_patch = bg_orig[max(0, cy - ph // 2):min(H, cy + ph // 2),
+                       max(0, cx - pw // 2):min(W, cx + pw // 2)]
+    color = pick_cursor_color(bg_patch)
+    bg = bg_orig.copy()
+    bg, _vis = composite(bg, sprite, cx, cy, color)
+    return augment(bg), {
+        "x": -1, "y": -1, "has_cursor": 0, "sample_type": "hard_neg",
+        "decoy_type": decoy_type, "decoy_pos": [cx, cy],
+    }
+
+
+def gen_plain_neg(bg_orig: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Unmodified background, no cursor, has_cursor=0."""
+    return augment(bg_orig.copy()), {
+        "x": -1, "y": -1, "has_cursor": 0, "sample_type": "plain_neg",
+    }
+
+
+# ============================================================
+# Main
+# ============================================================
+
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--per-bg", type=int, default=80,
-                   help="positive samples per background (cursor present)")
-    p.add_argument("--negatives-per-bg", type=int, default=10,
-                   help="negative samples per background (no cursor — for confidence head)")
+    p.add_argument("--per-bg", type=int, default=1100,
+                   help="total samples per background (split per the fractions below)")
+    p.add_argument("--normal-pos-frac", type=float, default=0.55)
+    p.add_argument("--edge-pos-frac",   type=float, default=0.15)
+    p.add_argument("--hard-neg-frac",   type=float, default=0.15)
+    p.add_argument("--plain-neg-frac",  type=float, default=0.15)
     p.add_argument("--out-dir", default=OUT_DIR)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--margin", type=int, default=50,
-                   help="keep cursor center >= margin from any edge so disc fully visible")
+                   help="min distance from edge for non-edge samples")
+    p.add_argument("--limit-bgs", type=int, default=0,
+                   help="if >0, only process the first N backgrounds (for quick smoke tests)")
     args = p.parse_args()
+
+    fracs = (args.normal_pos_frac, args.edge_pos_frac,
+             args.hard_neg_frac, args.plain_neg_frac)
+    if abs(sum(fracs) - 1.0) > 1e-3:
+        print(f"FAIL: fractions sum to {sum(fracs):.3f}, must equal 1.0", file=sys.stderr)
+        return 1
+
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -174,71 +393,68 @@ def main() -> int:
     if not bgs:
         print(f"FAIL: no backgrounds in {BG_DIR}", file=sys.stderr)
         return 1
-    print(f"backgrounds: {len(bgs)}  per_bg={args.per_bg}  negatives_per_bg={args.negatives_per_bg}")
-    print(f"expected total: {len(bgs)*(args.per_bg+args.negatives_per_bg)} samples")
+    if args.limit_bgs > 0:
+        bgs = bgs[:args.limit_bgs]
+
+    n_normal = int(args.per_bg * args.normal_pos_frac)
+    n_edge   = int(args.per_bg * args.edge_pos_frac)
+    n_hard   = int(args.per_bg * args.hard_neg_frac)
+    n_plain  = args.per_bg - n_normal - n_edge - n_hard  # remainder absorbs rounding
+
+    print(f"backgrounds: {len(bgs)}  per_bg={args.per_bg}")
+    print(f"  normal_pos: {n_normal}  edge_pos: {n_edge}  "
+          f"hard_neg: {n_hard}  plain_neg: {n_plain}")
+    print(f"  expected total ≈ {len(bgs) * args.per_bg} samples (edge rejects "
+          f"reduce slightly)")
 
     img_dir = os.path.join(args.out_dir, "imgs")
     os.makedirs(img_dir, exist_ok=True)
     label_path = os.path.join(args.out_dir, "labels.jsonl")
 
-    print(f"cursor sprite (procedural disc): diameter sampled in [{CURSOR_PX_MIN},{CURSOR_PX_MAX}] per instance, peak alpha {CURSOR_ALPHA_PEAK:.2f}")
-
     idx = 0
+    rejected_edge = 0
+    counts = {"normal_pos": 0, "edge_pos": 0, "hard_neg": 0, "plain_neg": 0}
     with open(label_path, "w") as labels_f:
         for bg_idx, bg_path in enumerate(bgs):
             bg_orig = cv2.imread(bg_path)
             if bg_orig is None or bg_orig.shape[:2] != (H, W):
                 print(f"  skip {bg_path} (bad shape)", file=sys.stderr)
                 continue
+            bg_id = os.path.basename(bg_path)
 
-            # Positive samples — cursor at random position with random size jitter
-            for _ in range(args.per_bg):
-                cx = random.randint(args.margin, W - args.margin)
-                cy = random.randint(args.margin, H - args.margin)
-                bg = bg_orig.copy()
+            # Build (gen_fn, count) plan and shuffle so they interleave on disk
+            plan: list[tuple[str, callable]] = []
+            for _ in range(n_normal):
+                plan.append(("normal_pos", lambda b=bg_orig: gen_normal_pos(b, args.margin)))
+            for _ in range(n_edge):
+                plan.append(("edge_pos", lambda b=bg_orig: gen_edge_pos(b, args.margin)))
+            for _ in range(n_hard):
+                plan.append(("hard_neg", lambda b=bg_orig: gen_hard_neg(b, args.margin)))
+            for _ in range(n_plain):
+                plan.append(("plain_neg", lambda b=bg_orig: gen_plain_neg(b)))
+            random.shuffle(plan)
 
-                # Per-sample size jitter (real cursor is 46 px ± 4 from anti-alias / encoding)
-                diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
-                sprite_alpha = make_pointer_mask(diameter=diameter)
-                ph = sprite_alpha.shape[0]; pw = sprite_alpha.shape[1]
-
-                py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
-                py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
-                bg_patch = bg_orig[py0:py1, px0:px1]
-                lum_under = luminance(bg_patch)
-                cursor_color = pick_cursor_color(bg_patch)
-
-                composite(bg, sprite_alpha, cx, cy, cursor_color)
-                bg = augment(bg)
+            for sample_kind, gen in plan:
+                result = gen()
+                if result is None:
+                    rejected_edge += 1
+                    continue
+                img, label = result
                 out_path = os.path.join(img_dir, f"{idx:06d}.jpg")
-                cv2.imwrite(out_path, bg, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                labels_f.write(json.dumps({
-                    "path": f"imgs/{idx:06d}.jpg",
-                    "x": cx, "y": cy,
-                    "has_cursor": 1,
-                    "lum_under": round(lum_under, 1),
-                    "cursor_v": cursor_color[0],
-                }) + "\n")
-                idx += 1
-
-            # Negative samples — no cursor (for confidence head training)
-            for _ in range(args.negatives_per_bg):
-                bg = augment(bg_orig.copy())
-                out_path = os.path.join(img_dir, f"{idx:06d}.jpg")
-                cv2.imwrite(out_path, bg, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                labels_f.write(json.dumps({
-                    "path": f"imgs/{idx:06d}.jpg",
-                    "x": -1, "y": -1,
-                    "has_cursor": 0,
-                    "lum_under": -1,
-                    "cursor_v": -1,
-                }) + "\n")
+                cv2.imwrite(out_path, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                label["path"] = f"imgs/{idx:06d}.jpg"
+                label["bg_id"] = bg_id
+                labels_f.write(json.dumps(label) + "\n")
+                counts[sample_kind] += 1
                 idx += 1
 
             if (bg_idx + 1) % 10 == 0:
-                print(f"  {bg_idx+1}/{len(bgs)} bgs processed, {idx} total samples")
+                print(f"  {bg_idx + 1}/{len(bgs)} bgs processed, {idx} samples "
+                      f"(rejected {rejected_edge} edge-too-small)")
 
     print(f"\nwrote {idx} samples → {img_dir}")
+    print(f"  by type: {counts}")
+    print(f"  rejected edge samples (visible<{int(MIN_VISIBLE_FRAC*100)}%): {rejected_edge}")
     print(f"labels → {label_path}")
     return 0
 

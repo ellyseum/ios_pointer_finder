@@ -40,16 +40,43 @@ TRAIN_W, TRAIN_H = 497, 1080  # 2x downsample (was 4x — cursor was sub-pixel
                               # ~3 px in feature map, learnable)
 
 
+# Sample type encoding for metric slicing. Negative type id = unknown/legacy
+# (datasets generated before sample_type field was added).
+SAMPLE_TYPES = {"normal_pos": 0, "edge_pos": 1, "hard_neg": 2, "plain_neg": 3}
+SAMPLE_TYPES_INV = {v: k for k, v in SAMPLE_TYPES.items()}
+
+
 class PointerDataset(Dataset):
-    def __init__(self, dataset_dir: str, train: bool = True, val_frac: float = 0.1):
+    """
+    BG-LEVEL train/val split.
+    Hold out a fraction of unique bg_ids; all samples from those bgs go to val.
+    Falls back to sample-level split with a warning if labels lack bg_id
+    (legacy datasets only).
+    """
+    def __init__(self, dataset_dir: str, train: bool = True, val_frac: float = 0.1,
+                 val_bg_ids: set[str] | None = None):
         with open(os.path.join(dataset_dir, "labels.jsonl")) as f:
             all_labels = [json.loads(line) for line in f if line.strip()]
-        random.Random(42).shuffle(all_labels)
-        n_val = max(1, int(len(all_labels) * val_frac))
-        if train:
-            self.entries = all_labels[n_val:]
+
+        has_bg_id = bool(all_labels) and "bg_id" in all_labels[0]
+        if has_bg_id:
+            if val_bg_ids is None:
+                bg_ids = sorted({e["bg_id"] for e in all_labels})
+                n_val_bg = max(1, int(round(len(bg_ids) * val_frac)))
+                val_bg_ids = set(random.Random(42).sample(bg_ids, n_val_bg))
+            entries = [e for e in all_labels if (e["bg_id"] in val_bg_ids) != train]
+            self.val_bg_ids = set(val_bg_ids)
+            self.split_kind = "bg-level"
         else:
-            self.entries = all_labels[:n_val]
+            print("WARN: dataset missing bg_id field; falling back to sample-level "
+                  "split (val_pos_err will be optimistic on this dataset).")
+            random.Random(42).shuffle(all_labels)
+            n_val = max(1, int(len(all_labels) * val_frac))
+            entries = all_labels[n_val:] if train else all_labels[:n_val]
+            self.val_bg_ids = set()
+            self.split_kind = "sample-level (legacy fallback)"
+
+        self.entries = entries
         self.dataset_dir = dataset_dir
 
     def __len__(self) -> int:
@@ -71,7 +98,9 @@ class PointerDataset(Dataset):
         else:
             target_xy = torch.tensor([0.0, 0.0], dtype=torch.float32)
             target_conf = torch.tensor(0.0)
-        return x, target_xy, target_conf
+        sample_type = torch.tensor(
+            SAMPLE_TYPES.get(e.get("sample_type", ""), -1), dtype=torch.long)
+        return x, target_xy, target_conf, sample_type
 
 
 class PointerNet(nn.Module):
@@ -126,12 +155,13 @@ class PointerNet(nn.Module):
 
 
 def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
-                        sigma_px: float = 1.5) -> torch.Tensor:
+                        sigma_px: float = 2.0) -> torch.Tensor:
     """
     Build (B, 1, H', W') Gaussian target heatmap centered at each (x_norm, y_norm).
-    sigma_px = stddev in heatmap pixel units. With H'=34, W'=16, sigma=1.5
-    gives a tight peak (~3-pixel radius) that the model can train against
-    directly via MSE — strong gradient signal vs. soft-argmax indirect path.
+    sigma_px = stddev in heatmap pixel units. Cursor is ~46 native px = ~3 px
+    in feature map at 1/16 resolution, so sigma=2.0 gives a peak slightly
+    wider than the cursor itself — enough gradient signal without training
+    diffuse predictions.
     """
     B = target_xy_norm.shape[0]
     device = target_xy_norm.device
@@ -151,9 +181,12 @@ def train_loop(args):
     if device.type == "cuda":
         print(f"  {torch.cuda.get_device_name(0)}")
 
-    train_ds = PointerDataset(args.dataset, train=True)
-    val_ds = PointerDataset(args.dataset, train=False)
-    print(f"train: {len(train_ds)}  val: {len(val_ds)}")
+    train_ds = PointerDataset(args.dataset, train=True, val_frac=args.val_frac)
+    val_ds = PointerDataset(args.dataset, train=False, val_frac=args.val_frac,
+                            val_bg_ids=train_ds.val_bg_ids)
+    print(f"train: {len(train_ds)}  val: {len(val_ds)}  split: {train_ds.split_kind}")
+    if train_ds.val_bg_ids:
+        print(f"  val bgs ({len(train_ds.val_bg_ids)}): {sorted(train_ds.val_bg_ids)[:6]}...")
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                            num_workers=args.workers, pin_memory=True, drop_last=False)
     val_dl = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
@@ -166,67 +199,134 @@ def train_loop(args):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
+    # Loss weights (v0.3 — v0.3 fixes)
+    HM_WEIGHT = 10.0          # heatmap BCE total
+    HM_NEG_REL = 0.5          # neg term scaled relative to pos (Codex)
+    XY_WEIGHT_WARMUP = 5.0    # soft-argmax MSE — full first 5 epochs
+    XY_WEIGHT_LATE = 2.5      # demoted after warmup (Codex: hard-argmax inference)
+    XY_WARMUP_EPOCHS = 5
+    CONF_WEIGHT = 2.0         # bumped from 1.0 (Gemini: conf needs more pressure)
+
     best_val_err = float("inf")
     for epoch in range(1, args.epochs + 1):
+        xy_w = XY_WEIGHT_WARMUP if epoch <= XY_WARMUP_EPOCHS else XY_WEIGHT_LATE
         model.train()
         t0 = time.monotonic()
-        train_xy_loss = 0.0; train_conf_loss = 0.0; n_train = 0
-        for x, target_xy, target_conf in train_dl:
+        train_xy_loss = 0.0; train_conf_loss = 0.0
+        train_hm_pos_loss = 0.0; train_hm_neg_loss = 0.0
+        n_train = 0; n_train_pos = 0; n_train_neg = 0
+        for x, target_xy, target_conf, _stype in train_dl:
             x = x.to(device, non_blocking=True)
             target_xy = target_xy.to(device, non_blocking=True)
             target_conf = target_conf.to(device, non_blocking=True)
             pred_xy, pred_conf_logit, pred_hm = model(x)
-            mask = target_conf  # 1 if positive, 0 if negative
-            # PRIMARY signal: heatmap BCE (better than MSE for sparse Gaussian targets;
-            # MSE is dominated by 99% background pixels, gradients toward the peak
-            # are too weak. BCE balances pos/neg pixel contributions.)
             B, _, H, W = pred_hm.shape
-            target_hm = make_target_heatmap(target_xy, H, W, sigma_px=4.0)
-            # BCE expects logits (no sigmoid). pred_hm is logits.
+
+            pos_mask = target_conf
+            neg_mask = 1.0 - target_conf
+            pos_count = pos_mask.sum().clamp_min(1.0)
+            neg_count = neg_mask.sum().clamp_min(1.0)
+
+            # Build target heatmap; ZERO for negatives so no peak is correct.
+            #
+            target_hm_pos = make_target_heatmap(target_xy, H, W, sigma_px=2.0)
+            target_hm = target_hm_pos * pos_mask.view(-1, 1, 1, 1)
             hm_loss_per_b = F.binary_cross_entropy_with_logits(
                 pred_hm.squeeze(1), target_hm.squeeze(1), reduction='none'
             ).mean(dim=(1, 2))
-            hm_loss = (hm_loss_per_b * mask).sum() / mask.sum().clamp_min(1.0)
-            # SECONDARY: soft-argmax MSE for sub-pixel refinement
-            xy_loss = ((pred_xy - target_xy) ** 2).sum(dim=1) * mask
-            xy_loss = xy_loss.sum() / mask.sum().clamp_min(1.0)
+            # Split pos/neg terms — explicit control as data mix shifts
+            hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
+            hm_neg_loss = (hm_loss_per_b * neg_mask).sum() / neg_count
+            hm_loss = hm_pos_loss + HM_NEG_REL * hm_neg_loss
+
+            # Soft-argmax MSE — secondary signal, weight schedule (warmup then demote)
+            xy_loss = ((pred_xy - target_xy) ** 2).sum(dim=1) * pos_mask
+            xy_loss = xy_loss.sum() / pos_count
+
             conf_loss = F.binary_cross_entropy_with_logits(pred_conf_logit, target_conf)
-            loss = hm_loss * 10.0 + xy_loss * 5.0 + conf_loss
+            loss = hm_loss * HM_WEIGHT + xy_loss * xy_w + conf_loss * CONF_WEIGHT
+
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
+
             train_xy_loss += xy_loss.item() * x.size(0)
             train_conf_loss += conf_loss.item() * x.size(0)
+            train_hm_pos_loss += hm_pos_loss.item() * pos_count.item()
+            train_hm_neg_loss += hm_neg_loss.item() * neg_count.item()
             n_train += x.size(0)
+            n_train_pos += int(pos_count.item())
+            n_train_neg += int(neg_count.item())
         sched.step()
 
+        # ---- Validation: sliced metrics by sample_type ----
         model.eval()
+        slice_err_sum: dict[int, float] = {}
+        slice_err_n: dict[int, int] = {}
+        slice_fpr_pred: dict[int, int] = {}   # how many predicted positive (conf > 0.5)
+        slice_fpr_n: dict[int, int] = {}
+        slice_peak_high: dict[int, int] = {}  # how many had heatmap peak > 0.5
         with torch.no_grad():
-            val_pos_err_px = 0.0; n_val_pos = 0
             val_conf_correct = 0; n_val = 0
-            for x, target_xy, target_conf in val_dl:
-                x = x.to(device); target_xy = target_xy.to(device); target_conf = target_conf.to(device)
-                pred_xy, pred_conf_logit, _ = model(x)
+            for x, target_xy, target_conf, sample_type in val_dl:
+                x = x.to(device); target_xy = target_xy.to(device)
+                target_conf = target_conf.to(device); sample_type = sample_type.to(device)
+                pred_xy, pred_conf_logit, pred_hm = model(x)
                 pred_conf = torch.sigmoid(pred_conf_logit)
-                # Position error in NATIVE pixels (un-normalize)
-                pos_mask = (target_conf == 1)
-                if pos_mask.any():
-                    e_xn = (pred_xy[:, 0] - target_xy[:, 0]) * NATIVE_W
-                    e_yn = (pred_xy[:, 1] - target_xy[:, 1]) * NATIVE_H
-                    err_px = torch.sqrt(e_xn ** 2 + e_yn ** 2)
-                    val_pos_err_px += err_px[pos_mask].sum().item()
-                    n_val_pos += pos_mask.sum().item()
                 pred_label = (pred_conf > 0.5).float()
                 val_conf_correct += (pred_label == target_conf).sum().item()
                 n_val += x.size(0)
 
+                # Per-sample peak prob (heatmap-derived confidence)
+                hm_prob = torch.sigmoid(pred_hm).view(x.size(0), -1)
+                hm_peak = hm_prob.max(dim=1).values
+
+                # Position error in NATIVE pixels (un-normalize)
+                e_xn = (pred_xy[:, 0] - target_xy[:, 0]) * NATIVE_W
+                e_yn = (pred_xy[:, 1] - target_xy[:, 1]) * NATIVE_H
+                err_px = torch.sqrt(e_xn ** 2 + e_yn ** 2)
+
+                for t_id in sample_type.unique().tolist():
+                    sel = (sample_type == t_id)
+                    is_pos_type = (t_id == SAMPLE_TYPES["normal_pos"]
+                                   or t_id == SAMPLE_TYPES["edge_pos"]
+                                   or t_id == -1)  # legacy: assume positive
+                    if is_pos_type:
+                        pos_sel = sel & (target_conf == 1)
+                        if pos_sel.any():
+                            slice_err_sum[t_id] = slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            slice_err_n[t_id] = slice_err_n.get(t_id, 0) + int(pos_sel.sum().item())
+                    else:
+                        # Negative slice: count false positives
+                        slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[sel].sum().item())
+                        slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(sel.sum().item())
+                        slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[sel] > 0.5).sum().item())
+
         dt = time.monotonic() - t0
-        mean_pos_err = val_pos_err_px / max(1, n_val_pos)
+        # Aggregate metrics
+        all_err_sum = sum(slice_err_sum.values()); all_err_n = sum(slice_err_n.values())
+        mean_pos_err = all_err_sum / max(1, all_err_n)
         conf_acc = val_conf_correct / max(1, n_val)
+        # Per-slice formatted lines
+        slice_lines = []
+        for t_id, name in SAMPLE_TYPES_INV.items():
+            if t_id in slice_err_n and slice_err_n[t_id] > 0:
+                err = slice_err_sum[t_id] / slice_err_n[t_id]
+                slice_lines.append(f"{name}_err={err:.1f}px(n={slice_err_n[t_id]})")
+            if t_id in slice_fpr_n and slice_fpr_n[t_id] > 0:
+                fpr_conf = slice_fpr_pred[t_id] / slice_fpr_n[t_id]
+                fpr_peak = slice_peak_high[t_id] / slice_fpr_n[t_id]
+                slice_lines.append(f"{name}_fpr_conf={fpr_conf*100:.1f}%_peak={fpr_peak*100:.1f}%(n={slice_fpr_n[t_id]})")
+        slice_str = "  ".join(slice_lines) if slice_lines else "(legacy dataset; no slices)"
+
         print(f"epoch {epoch:3d}/{args.epochs}  "
+              f"train_hm_pos={train_hm_pos_loss/max(1,n_train_pos):.4f} "
+              f"train_hm_neg={train_hm_neg_loss/max(1,n_train_neg):.4f} "
               f"train_xy={train_xy_loss/n_train:.4f} train_conf={train_conf_loss/n_train:.4f}  "
-              f"val_pos_err={mean_pos_err:.1f}px  val_conf_acc={conf_acc*100:.1f}%  "
-              f"lr={opt.param_groups[0]['lr']:.5f}  ({dt:.1f}s)")
+              f"val_pos_err={mean_pos_err:.1f}px val_conf_acc={conf_acc*100:.1f}%  "
+              f"lr={opt.param_groups[0]['lr']:.5f} xy_w={xy_w:.1f}  ({dt:.1f}s)")
+        if slice_lines:
+            print(f"        {slice_str}")
 
         if mean_pos_err < best_val_err:
             best_val_err = mean_pos_err
@@ -247,10 +347,12 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", default=DATASET_DIR)
     p.add_argument("--weights-out", default=WEIGHTS_PATH)
-    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--val-frac", type=float, default=0.10,
+                   help="fraction of bg_ids to hold out for validation (bg-level split)")
     args = p.parse_args()
     return train_loop(args)
 
