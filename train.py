@@ -32,6 +32,18 @@ from torch.utils.data import DataLoader, Dataset
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(ROOT, "dataset")
 WEIGHTS_PATH = os.path.join(ROOT, "pointer_model.pt")
+VERSION_PATH = os.path.join(ROOT, "VERSION")
+
+
+def read_version() -> str:
+    """Read semver from the VERSION file at repo root. Used to tag saved
+    checkpoints so old versions are never overwritten by future training runs.
+    Format: single line like '0.3.1'. Falls back to 'unversioned' if missing."""
+    try:
+        with open(VERSION_PATH) as f:
+            return f.read().strip()
+    except OSError:
+        return "unversioned"
 
 NATIVE_W, NATIVE_H = 994, 2160
 TRAIN_W, TRAIN_H = 497, 1080  # 2x downsample (was 4x — cursor was sub-pixel
@@ -176,8 +188,9 @@ def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
 
 
 def train_loop(args):
+    version = read_version()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device: {device}")
+    print(f"ios_pointer_finder v{version}  device: {device}")
     if device.type == "cuda":
         print(f"  {torch.cuda.get_device_name(0)}")
 
@@ -347,14 +360,24 @@ def train_loop(args):
 
         if mean_pos_err < best_val_err:
             best_val_err = mean_pos_err
-            torch.save({"model": model.state_dict(),
-                        "epoch": epoch,
-                        "val_pos_err_px": mean_pos_err,
-                        "val_conf_acc": conf_acc,
-                        "native_size": (NATIVE_W, NATIVE_H),
-                        "train_size": (TRAIN_W, TRAIN_H),
-                       }, args.weights_out)
-            print(f"  ✓ saved best (val_pos_err={mean_pos_err:.1f}px) → {args.weights_out}")
+            ckpt = {"model": model.state_dict(),
+                    "epoch": epoch,
+                    "val_pos_err_px": mean_pos_err,
+                    "val_conf_acc": conf_acc,
+                    "native_size": (NATIVE_W, NATIVE_H),
+                    "train_size": (TRAIN_W, TRAIN_H),
+                    "version": version}
+            # Rolling pointer: pointer_model.pt is always the best so far
+            torch.save(ckpt, args.weights_out)
+            # Versioned snapshot: pointer_model_v{VERSION}.pt — never gets
+            # overwritten by future versions since the filename includes the
+            # current VERSION. Bump VERSION before training a new variant.
+            versioned_path = os.path.join(
+                os.path.dirname(args.weights_out),
+                f"pointer_model_v{version}.pt")
+            torch.save(ckpt, versioned_path)
+            print(f"  ✓ saved best (val_pos_err={mean_pos_err:.1f}px) → "
+                  f"{os.path.basename(args.weights_out)} + v{version} snapshot")
 
     print(f"\nfinal best val_pos_err: {best_val_err:.1f}px")
     return 0
