@@ -98,7 +98,14 @@ class PointerFinder:
         self.train_size = tuple(self.config.get("train_size", (TRAIN_W, TRAIN_H)))
 
     @classmethod
-    def from_pretrained(cls, name_or_path: str, **kwargs) -> PointerFinder:
+    def from_pretrained(
+        cls,
+        name_or_path: str,
+        filename: str = "pointer_model.safetensors",
+        config_filename: str = "config.json",
+        revision: str | None = None,
+        **kwargs,
+    ) -> PointerFinder:
         """Load by HF repo id, local path, or bare checkpoint name.
 
         Resolution order:
@@ -106,6 +113,18 @@ class PointerFinder:
             2. If it looks like an HF repo id (contains "/") → download via
                huggingface_hub (requires `pip install ios-pointer-finder[hub]`).
             3. Otherwise → treat as a relative path under cwd.
+
+        Args:
+            name_or_path: HF repo id ("ellyseum/ios_pointer_finder"), local
+                checkpoint path, or bare filename relative to cwd.
+            filename: weight file inside the HF repo. Default `pointer_model.safetensors`
+                points at the canonical "current" weights. Override to pin a
+                specific historical version (e.g. `pointer_model_v0.3.4_30.5px.safetensors`).
+            config_filename: sidecar metadata file inside the HF repo.
+                Set to None to skip config download.
+            revision: HF repo branch, tag, or commit SHA. Default uses the
+                main branch's HEAD. Pin a tag (e.g. `v0.3.4`) for reproducibility.
+            **kwargs: forwarded to PointerFinder.__init__ (device, etc.).
         """
         candidate = Path(name_or_path)
         if candidate.is_file():
@@ -120,17 +139,21 @@ class PointerFinder:
                 ) from e
             weights = hf_hub_download(
                 repo_id=name_or_path,
-                filename="pointer_model.safetensors",
+                filename=filename,
+                revision=revision,
             )
-            try:
-                config_path = hf_hub_download(
-                    repo_id=name_or_path,
-                    filename="config.json",
-                )
-                with open(config_path) as f:
-                    config = json.load(f)
-            except Exception:
-                config = None
+            config = None
+            if config_filename:
+                try:
+                    config_path = hf_hub_download(
+                        repo_id=name_or_path,
+                        filename=config_filename,
+                        revision=revision,
+                    )
+                    with open(config_path) as f:
+                        config = json.load(f)
+                except Exception:
+                    config = None
             return cls(weights, config=config, **kwargs)
 
         return cls(candidate, **kwargs)
