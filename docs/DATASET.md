@@ -10,7 +10,11 @@ training set locally.
 
 ## What you need
 
-- An unmodified iPhone running iOS 13+ (Pointer Control supported).
+- An unmodified iPhone running iOS 13+ (Pointer Control supported). The
+  published checkpoints were calibrated on **iPhone 16 Pro Max
+  (`iPhone17,2`), iOS 26.3.1**; if you train on a different device the
+  values of `NATIVE_W` / `NATIVE_H` in `train.py` may need to change to
+  match your device's mirror resolution.
 - A way to capture screen frames from the iPhone (any pixel-faithful path
   works — AirPlay receiver, USB tethered capture, screen recording, etc.).
 - 100+ unique screen captures with the cursor **OFF** (Bluetooth pointer

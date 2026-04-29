@@ -222,14 +222,44 @@ CI runs ruff + pytest on every push and PR. See
 
 ---
 
-## Roadmap
+## Versioning history
 
-- **v0.4** — float-label augmentation + parabolic subpixel refinement at inference
-  (target: <20 px val pos err)
-- **v0.5** — bootstrap loop: trained agent self-generates verified labels by
-  driving the cursor and observing motion (eliminates synthetic-data ceiling)
-- **v0.5+** — CoreML / ONNX export polished; Apple Silicon parity
-- **v0.6** — second perception model: per-app UI element classifier
+The shipped weights are calibrated on **iPhone 16 Pro Max (`iPhone17,2`),
+iOS 26.3.1**, portrait orientation, 994×2160 AirPlay mirror native. Each
+major version represents a deliberate stage in moving from "works on one
+device" to "works on any current iPhone."
+
+| Stage | Tag(s)        | Story |
+|------:|---------------|-------|
+| PoC   | `v0.1` / `v0.2` | Initial proof: synthetic-data CNN learns the cursor sprite at all. Bg-leaky validation, 73.9 px val pos error. |
+| Refinements | `v0.3.0` | Heatmap regression head replaces xy-only regression. **Loss mask fix** so negatives no longer push down the heatmap globally. **Bg-level val split** so the validation number stops being leaky. **Hard negatives** (decoy cursor shapes) so the model rejects icon dots and notification badges. 30.8 px val (honest split) but starts overfitting. |
+| Overfit fixes + conf | `v0.3.1` … `v0.3.4` | Train-time augmentation (random crop + horizontal flip + photometric jitter), late-backbone dropout, conf-head loss weight bumped, cosine restart from previous best. **30.5 px val pos error (current best)**, cursor-free FPR <2%. |
+| **v0.4 (planned)** | — | Correctness fixes: float labels propagated through augmentation, parabolic subpixel refinement at inference, ONNX/CoreML/tfjs export parity check, fp32 → int8 quant ablation. Target: **<20 px val pos err**. |
+| **v0.5 (planned)** | — | **Bootstrap loop / noisy-student self-labeling.** A trained agent moves the cursor across the screen, captures real frames, and emits verified labels (move → observe → reverse-move → re-observe). Retrain on real-cursor data instead of synthesis. Eliminates the synthetic-data ceiling. |
+| **v0.6+ (planned)** | — | **Generalization across current iPhones.** Multi-device dataset (iPhone 15 series, iPhone 16 / Pro / Pro Max / Plus) collected via the v0.5 bootstrap loop on each device. One model that works on any current iPhone in portrait + landscape. |
+| **v1.0** | — | Stable public API + cross-platform export (CoreML / ONNX / tfjs) + multi-device coverage. Frozen interface. |
+
+## Roadmap milestones
+
+- **v0.4** — correctness fixes + portable artifacts
+  - Float labels through augmentation
+  - Parabolic subpixel refinement at inference time
+  - ONNX + CoreML + tfjs export with parity check
+  - int8 quantization ablation (target: 340 KB checkpoint, <2 px accuracy delta)
+  - Benchmark script (latency + throughput on RTX / M-series / CPU)
+
+- **v0.5** — bootstrap loop / noisy-student self-labeling
+  - On-device explorer agent: drives the cursor, records frame + commanded position
+  - Move-and-undo dance for verified ground-truth labels (motion existence + reversibility, not commanded magnitude)
+  - 3.5 s auto-hide window for cursor-free background capture
+  - Retrain on real-cursor data; iterate until val saturates
+  - Goal: surpass synthetic-data ceiling on real-frame eval
+
+- **v0.6+** — generalization
+  - Bootstrap on iPhone 15 / 15 Pro / 16 / 16 Pro / 16 Plus
+  - Landscape orientation
+  - Single multi-device model
+  - Per-app UI element classifier as a second perception head
 
 ---
 
