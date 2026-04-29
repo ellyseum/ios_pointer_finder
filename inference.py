@@ -38,6 +38,42 @@ from train import NATIVE_H, NATIVE_W, TRAIN_H, TRAIN_W, PointerNet
 PathLike = str | os.PathLike | Path
 
 
+def _parabolic_offset(hm: np.ndarray, ix: int, iy: int, axis: str) -> float:
+    """Sub-cell offset of the parabola fit through the argmax cell + 2 neighbors.
+
+    For axis 'x', uses hm[iy, ix-1], hm[iy, ix], hm[iy, ix+1].
+    For axis 'y', uses hm[iy-1, ix], hm[iy, ix], hm[iy+1, ix].
+
+    Returns 0.0 when the argmax is on the heatmap border (no valid neighbor)
+    or when the parabola is degenerate (denominator near zero — flat heatmap).
+    Returns a clamped offset in [-0.5, 0.5] (the parabola vertex can't be
+    further from the integer cell than half a cell width if the cell really
+    is the argmax).
+    """
+    H, W = hm.shape
+    if axis == "x":
+        if ix <= 0 or ix >= W - 1:
+            return 0.0
+        a = float(hm[iy, ix - 1])
+        b = float(hm[iy, ix])
+        c = float(hm[iy, ix + 1])
+    else:
+        if iy <= 0 or iy >= H - 1:
+            return 0.0
+        a = float(hm[iy - 1, ix])
+        b = float(hm[iy, ix])
+        c = float(hm[iy + 1, ix])
+    denom = a - 2.0 * b + c
+    if abs(denom) < 1e-9:
+        return 0.0
+    off = 0.5 * (a - c) / denom
+    if off > 0.5:
+        off = 0.5
+    elif off < -0.5:
+        off = -0.5
+    return off
+
+
 @dataclass
 class PointerPrediction:
     """Result of one ios_pointer_finder inference call.
@@ -195,12 +231,18 @@ class PointerFinder:
         H, W = prob.shape
         flat = int(prob.argmax())
         iy, ix = flat // W, flat % W
-        # Map heatmap-cell index → native pixel coordinate. The argmax can land
-        # on the last cell (ix == W-1, iy == H-1), and ix / (W-1) * nw == nw —
-        # one pixel past the last valid index. Clamp to [0, nw-1] / [0, nh-1]
-        # so callers can use the result as an array index directly.
-        cx = min(nw - 1, int(round(ix / max(1, W - 1) * nw)))
-        cy = min(nh - 1, int(round(iy / max(1, H - 1) * nh)))
+        # Parabolic subpixel refinement (v0.4). Fit a 1-D parabola to the
+        # argmax cell and its two neighbors on each axis. The vertex offset
+        # (in cell units) is a closed-form 0.5*(a-c)/(a-2b+c). Refines the
+        # cursor location below the heatmap stride (~16 native px) without
+        # extra forward passes.
+        rx = float(ix) + _parabolic_offset(prob, ix, iy, axis="x")
+        ry = float(iy) + _parabolic_offset(prob, ix, iy, axis="y")
+        # Map refined heatmap-cell index → native pixel coordinate. Clamp to
+        # [0, nw-1] / [0, nh-1] so callers can use the result as an array
+        # index directly.
+        cx = min(nw - 1, max(0, int(round(rx / max(1, W - 1) * nw))))
+        cy = min(nh - 1, max(0, int(round(ry / max(1, H - 1) * nh))))
         return PointerPrediction(
             x=cx,
             y=cy,
