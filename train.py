@@ -295,8 +295,11 @@ def heatmap_to_xy_px(hm_logits: torch.Tensor, native_w: int, native_h: int) -> t
 
     rx = ix.float() + off_x
     ry = iy.float() + off_y
-    cx_px = (rx / max(1, W - 1) * native_w).clamp(0, native_w - 1)
-    cy_px = (ry / max(1, H - 1) * native_h).clamp(0, native_h - 1)
+    # Match inference.py:244 — round to int before clamping so val_pos_err
+    # measures the same discrete output users see, not the continuous pre-
+    # rounding signal (~0.71 px optimistic on average).
+    cx_px = (rx / max(1, W - 1) * native_w).round().clamp(0, native_w - 1)
+    cy_px = (ry / max(1, H - 1) * native_h).round().clamp(0, native_h - 1)
     return torch.stack([cx_px, cy_px], dim=1)
 
 
@@ -535,13 +538,15 @@ def train_loop(args):
                 f"pointer_model_v{version}_{mean_pos_err:.1f}px.pt")
             torch.save(ckpt, err_path)
             log_extras = []
-            if mean_pos_err < best_val_err:
-                # Beats the global best too — update the rolling pointer.
+            # Capture the boolean BEFORE the update so the log tag is honest
+            # even on an exact float tie with the previous global best.
+            is_global = mean_pos_err < best_val_err
+            if is_global:
                 best_val_err = mean_pos_err
                 torch.save(ckpt, args.weights_out)
                 log_extras.append(os.path.basename(args.weights_out))
             log_extras.append(os.path.basename(err_path))
-            tag = "✓ saved global-best" if mean_pos_err == best_val_err else "↪ saved pass-best"
+            tag = "✓ saved global-best" if is_global else "↪ saved pass-best"
             print(f"  {tag} (val_pos_err={mean_pos_err:.1f}px) → " + " + ".join(log_extras))
 
     print(f"\nfinal pass best val_pos_err: {pass_best:.1f}px  "
