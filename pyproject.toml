@@ -63,7 +63,7 @@ Issues = "https://github.com/ellyseum/ios_pointer_finder/issues"
 Changelog = "https://github.com/ellyseum/ios_pointer_finder/blob/main/CHANGELOG.md"
 
 [project.scripts]
-ios-pointer-finder = "cli:main"
+ipf = "cli:main"
 
 [tool.setuptools]
 py-modules = [

@@ -12,7 +12,7 @@ body:
     id: model_version
     attributes:
       label: Model version
-      description: Output of `ios-pointer-finder version` (or the .pt/.safetensors filename).
+      description: Output of `ipf version` (or the .pt/.safetensors filename).
       placeholder: e.g. v0.3.4
     validations:
       required: true

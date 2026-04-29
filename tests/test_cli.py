@@ -1,4 +1,4 @@
-"""CLI surface tests — verifies the `ios-pointer-finder` entry point works."""
+"""CLI surface tests — verifies the `ipf` entry point works."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def test_version_prints(capsys, repo_root: Path):
 
 
 def test_predict_uses_local_safetensors(tmp_path: Path, capsys, monkeypatch, native_size):
-    """`ios-pointer-finder predict <image> --weights <path>` should run end-to-end
+    """`ipf predict <image> --weights <path>` should run end-to-end
     on a random-init checkpoint and print sensible numbers."""
     try:
         from safetensors.torch import save_file

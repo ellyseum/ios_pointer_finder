@@ -6,7 +6,7 @@ All notable changes to ios_pointer_finder are documented here. Format: [Keep a C
 
 ### Added
 - `inference.py` — public `PointerFinder` class for clean library usage.
-- `cli.py` — `ios-pointer-finder` console entry point (`predict`, `version`).
+- `cli.py` — `ipf` console entry point (`predict`, `version`).
 - `scripts/convert_pt_to_safetensors.py` — one-shot .pt → .safetensors + sidecar config.json conversion.
 - `scripts/export_onnx.py` — ONNX export with optional parity check.
 - `scripts/export_coreml.py` — Apple CoreML export.
