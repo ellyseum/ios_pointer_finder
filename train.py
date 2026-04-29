@@ -533,9 +533,16 @@ def train_loop(args):
             # on a within-pass new-best (even if it doesn't beat the rolling
             # global best) — eyeballing the dir shows the descent at a glance:
             # pointer_model_v0.3.1_64.2px.pt → ..._43.0px.pt → ..._30.8px.pt.
+            #
+            # When run inside the continuous-training loop, IPF_PASS_ID is set
+            # to the current pass number — it's injected into the filename so
+            # different warm-restart passes that happen to converge to the same
+            # rounded val_pos_err don't overwrite each other's weights.
+            pass_id = os.environ.get("IPF_PASS_ID", "").strip()
+            pass_tag = f"_p{pass_id}" if pass_id else ""
             err_path = os.path.join(
                 os.path.dirname(args.weights_out),
-                f"pointer_model_v{version}_{mean_pos_err:.1f}px.pt")
+                f"pointer_model_v{version}{pass_tag}_{mean_pos_err:.1f}px.pt")
             torch.save(ckpt, err_path)
             log_extras = []
             # Capture the boolean BEFORE the update so the log tag is honest

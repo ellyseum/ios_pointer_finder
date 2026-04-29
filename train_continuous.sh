@@ -50,6 +50,10 @@ while true; do
 
     echo "[continuous] === pass ${PASS} (${EPOCHS_PER_PASS} epochs) starting at $(date -Iseconds) ==="
     echo "[continuous] log → $LOG"
+    # Export pass id so train.py can inject it into per-best filenames; without
+    # it, two passes that converge to the same rounded val_pos_err would
+    # collide on disk and overwrite each other's weights.
+    IPF_PASS_ID="$PASS" \
     "${PYTHON:-python3}" train.py \
         --resume "$ROLLING_POINTER" \
         --epochs "$EPOCHS_PER_PASS" \
