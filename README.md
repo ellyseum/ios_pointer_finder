@@ -10,7 +10,7 @@ A 338K-parameter CNN that finds the iPhone Pointer-Control cursor in a screen ca
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 When you pair a Bluetooth mouse with an iPhone, iOS draws a small "@-symbol" cursor on the
-screen ([Pointer Control](https://support.apple.com/guide/iphone/use-a-mouse-or-trackpad-iph2af4b1bc/ios)).
+screen ([Pointer Control](https://support.apple.com/guide/iphone/adjust-pointer-settings-iphec6e1e60b/ios)).
 This repo trains and ships a tiny model that finds that cursor with sub-cursor-radius accuracy,
 on any iPhone screen, in real time. It's the perception layer of a closed-loop iPhone agent
 that drives an unmodified phone over BLE HID + AirPlay mirroring.
