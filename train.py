@@ -250,6 +250,56 @@ class PointerNet(nn.Module):
         return xy, conf_logit, hm  # hm is raw logits — used directly for heatmap MSE loss
 
 
+def heatmap_to_xy_px(hm_logits: torch.Tensor, native_w: int, native_h: int) -> torch.Tensor:
+    """Vectorized argmax + parabolic-subpixel refinement matching deployed inference.
+
+    Given a batch of heatmap logits (B, 1, H, W), returns (B, 2) of (x, y) in
+    native pixel coordinates. Mirrors `inference.py:_parabolic_offset` + the
+    coordinate mapping in `predict()`.
+
+    Used at validation time so val_pos_err measures the same path inference uses.
+    """
+    hm = torch.sigmoid(hm_logits)[:, 0]  # (B, H, W)
+    B, H, W = hm.shape
+    flat = hm.view(B, -1).argmax(dim=1)
+    ix = flat % W
+    iy = flat // W
+
+    # Parabolic offset along x (zero on horizontal borders or flat fits).
+    # The denominator (a - 2b + c) is NEGATIVE for a normal concave-down peak,
+    # so we cannot clamp_min: divide by sign-preserving abs-clamped denom and
+    # mask out near-zero denominators after.
+    can_x = (ix > 0) & (ix < W - 1)
+    bidx = torch.arange(B, device=hm.device)
+    ax = hm[bidx, iy, (ix - 1).clamp(min=0)]
+    bx = hm[bidx, iy, ix]
+    cx_ = hm[bidx, iy, (ix + 1).clamp(max=W - 1)]
+    denom_x = ax - 2 * bx + cx_
+    safe_denom_x = torch.where(denom_x.abs() > 1e-9, denom_x, torch.full_like(denom_x, 1e-9))
+    off_x = 0.5 * (ax - cx_) / safe_denom_x
+    off_x = torch.where(denom_x.abs() > 1e-9, off_x, torch.zeros_like(off_x))
+    off_x = off_x.clamp(-0.5, 0.5)
+    off_x = torch.where(can_x, off_x, torch.zeros_like(off_x))
+
+    # Parabolic offset along y.
+    can_y = (iy > 0) & (iy < H - 1)
+    ay = hm[bidx, (iy - 1).clamp(min=0), ix]
+    by = hm[bidx, iy, ix]
+    cy_ = hm[bidx, (iy + 1).clamp(max=H - 1), ix]
+    denom_y = ay - 2 * by + cy_
+    safe_denom_y = torch.where(denom_y.abs() > 1e-9, denom_y, torch.full_like(denom_y, 1e-9))
+    off_y = 0.5 * (ay - cy_) / safe_denom_y
+    off_y = torch.where(denom_y.abs() > 1e-9, off_y, torch.zeros_like(off_y))
+    off_y = off_y.clamp(-0.5, 0.5)
+    off_y = torch.where(can_y, off_y, torch.zeros_like(off_y))
+
+    rx = ix.float() + off_x
+    ry = iy.float() + off_y
+    cx_px = (rx / max(1, W - 1) * native_w).clamp(0, native_w - 1)
+    cy_px = (ry / max(1, H - 1) * native_h).clamp(0, native_h - 1)
+    return torch.stack([cx_px, cy_px], dim=1)
+
+
 def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
                         sigma_px: float = 2.0) -> torch.Tensor:
     """
@@ -321,9 +371,14 @@ def train_loop(args):
     XY_WARMUP_EPOCHS = 5
     CONF_WEIGHT = 2.0         # bumped from 1.0 — conf head needs more pressure
 
-    # Carry over the previous run's best so we don't overwrite a better
-    # checkpoint with the first eval of this run (especially after warmup).
+    # Carry over the previous run's best so the rolling pointer (--weights-out)
+    # only updates when this invocation actually beats the previous global
+    # best. The within-pass best (pass_best below) is tracked separately so
+    # we always emit a tagged snapshot of THIS pass's best, even if it didn't
+    # beat the rolling pointer — surfaces v0.4 SGDR-cycle progress when a hot
+    # restart momentarily plateaus above the previous global best.
     best_val_err = resume_best
+    pass_best = float("inf")
     for epoch in range(1, args.epochs + 1):
         xy_w = XY_WEIGHT_WARMUP if epoch <= XY_WARMUP_EPOCHS else XY_WEIGHT_LATE
         model.train()
@@ -379,8 +434,9 @@ def train_loop(args):
 
         # ---- Validation: sliced metrics by sample_type ----
         model.eval()
-        slice_err_sum: dict[int, float] = {}
+        slice_err_sum: dict[int, float] = {}      # heatmap+parabolic err (deployed inference path)
         slice_err_n: dict[int, int] = {}
+        slice_soft_err_sum: dict[int, float] = {} # soft-argmax err (legacy diag)
         slice_fpr_pred: dict[int, int] = {}   # how many predicted positive (conf > 0.5)
         slice_fpr_n: dict[int, int] = {}
         slice_peak_high: dict[int, int] = {}  # how many had heatmap peak > 0.5
@@ -399,10 +455,20 @@ def train_loop(args):
                 hm_prob = torch.sigmoid(pred_hm).view(x.size(0), -1)
                 hm_peak = hm_prob.max(dim=1).values
 
-                # Position error in NATIVE pixels (un-normalize)
-                e_xn = (pred_xy[:, 0] - target_xy[:, 0]) * NATIVE_W
-                e_yn = (pred_xy[:, 1] - target_xy[:, 1]) * NATIVE_H
+                # Position error in NATIVE pixels using the SAME path inference uses:
+                # heatmap argmax + parabolic subpixel refinement. Soft-argmax
+                # (pred_xy) is kept as a secondary signal for backward log
+                # comparison only — checkpoint selection uses err_px below.
+                hm_pred_xy_px = heatmap_to_xy_px(pred_hm, NATIVE_W, NATIVE_H)
+                target_x_px = target_xy[:, 0] * NATIVE_W
+                target_y_px = target_xy[:, 1] * NATIVE_H
+                e_xn = hm_pred_xy_px[:, 0] - target_x_px
+                e_yn = hm_pred_xy_px[:, 1] - target_y_px
                 err_px = torch.sqrt(e_xn ** 2 + e_yn ** 2)
+                # Soft-argmax error for diagnostic logging (legacy v0.3.x metric)
+                soft_e_xn = (pred_xy[:, 0] - target_xy[:, 0]) * NATIVE_W
+                soft_e_yn = (pred_xy[:, 1] - target_xy[:, 1]) * NATIVE_H
+                soft_err_px = torch.sqrt(soft_e_xn ** 2 + soft_e_yn ** 2)
 
                 for t_id in sample_type.unique().tolist():
                     sel = (sample_type == t_id)
@@ -413,6 +479,7 @@ def train_loop(args):
                         pos_sel = sel & (target_conf == 1)
                         if pos_sel.any():
                             slice_err_sum[t_id] = slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            slice_soft_err_sum[t_id] = slice_soft_err_sum.get(t_id, 0.0) + soft_err_px[pos_sel].sum().item()
                             slice_err_n[t_id] = slice_err_n.get(t_id, 0) + int(pos_sel.sum().item())
                     else:
                         # Negative slice: count false positives
@@ -423,7 +490,9 @@ def train_loop(args):
         dt = time.monotonic() - t0
         # Aggregate metrics
         all_err_sum = sum(slice_err_sum.values()); all_err_n = sum(slice_err_n.values())
-        mean_pos_err = all_err_sum / max(1, all_err_n)
+        all_soft_err_sum = sum(slice_soft_err_sum.values())
+        mean_pos_err = all_err_sum / max(1, all_err_n)            # heatmap+parabolic (deployed inference)
+        mean_soft_err = all_soft_err_sum / max(1, all_err_n)      # soft-argmax (legacy)
         conf_acc = val_conf_correct / max(1, n_val)
         # Per-slice formatted lines
         slice_lines = []
@@ -441,37 +510,42 @@ def train_loop(args):
               f"train_hm_pos={train_hm_pos_loss/max(1,n_train_pos):.4f} "
               f"train_hm_neg={train_hm_neg_loss/max(1,n_train_neg):.4f} "
               f"train_xy={train_xy_loss/n_train:.4f} train_conf={train_conf_loss/n_train:.4f}  "
-              f"val_pos_err={mean_pos_err:.1f}px val_conf_acc={conf_acc*100:.1f}%  "
+              f"val_pos_err={mean_pos_err:.1f}px(hm+parab) "
+              f"val_soft={mean_soft_err:.1f}px val_conf_acc={conf_acc*100:.1f}%  "
               f"lr={opt.param_groups[0]['lr']:.5f} xy_w={xy_w:.1f}  ({dt:.1f}s)")
         if slice_lines:
             print(f"        {slice_str}")
 
-        if mean_pos_err < best_val_err:
-            best_val_err = mean_pos_err
+        if mean_pos_err < pass_best:
+            pass_best = mean_pos_err
             ckpt = {"model": model.state_dict(),
                     "epoch": epoch,
                     "val_pos_err_px": mean_pos_err,
+                    "val_soft_err_px": mean_soft_err,
                     "val_conf_acc": conf_acc,
                     "native_size": (NATIVE_W, NATIVE_H),
                     "train_size": (TRAIN_W, TRAIN_H),
                     "version": version}
-            # Rolling pointer: pointer_model.pt is always the best so far
-            torch.save(ckpt, args.weights_out)
-            # Per-best snapshot tagged with version AND val_pos_err. Each new
-            # best creates a NEW file (no overwrite), so the filename history
-            # of the run is visible at a glance — e.g. eyeballing the dir
-            # shows the descent: pointer_model_v0.3.1_64.2px.pt → ..._43.0px.pt
-            # → ..._30.8px.pt. The smallest-err filename is always equivalent
-            # to the rolling pointer_model.pt of the same version.
+            # Per-best snapshot tagged with version AND val_pos_err. Always saved
+            # on a within-pass new-best (even if it doesn't beat the rolling
+            # global best) — eyeballing the dir shows the descent at a glance:
+            # pointer_model_v0.3.1_64.2px.pt → ..._43.0px.pt → ..._30.8px.pt.
             err_path = os.path.join(
                 os.path.dirname(args.weights_out),
                 f"pointer_model_v{version}_{mean_pos_err:.1f}px.pt")
             torch.save(ckpt, err_path)
-            print(f"  ✓ saved best (val_pos_err={mean_pos_err:.1f}px) → "
-                  f"{os.path.basename(args.weights_out)} + "
-                  f"{os.path.basename(err_path)}")
+            log_extras = []
+            if mean_pos_err < best_val_err:
+                # Beats the global best too — update the rolling pointer.
+                best_val_err = mean_pos_err
+                torch.save(ckpt, args.weights_out)
+                log_extras.append(os.path.basename(args.weights_out))
+            log_extras.append(os.path.basename(err_path))
+            tag = "✓ saved global-best" if mean_pos_err == best_val_err else "↪ saved pass-best"
+            print(f"  {tag} (val_pos_err={mean_pos_err:.1f}px) → " + " + ".join(log_extras))
 
-    print(f"\nfinal best val_pos_err: {best_val_err:.1f}px")
+    print(f"\nfinal pass best val_pos_err: {pass_best:.1f}px  "
+          f"(rolling global best: {best_val_err:.1f}px)")
     return 0
 
 

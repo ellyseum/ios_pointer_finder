@@ -23,8 +23,9 @@ that drives an unmodified phone over BLE HID + AirPlay mirroring.
 
 ## Quickstart
 
-> **Status:** PyPI publish + Hugging Face Hub model repo are both **planned for v0.4
-> release** (see [Roadmap](#roadmap-milestones)). Today's install path is from a clone:
+> **Status:** PyPI publish + Hugging Face Hub model repo are not live yet — both
+> are gated on the v0.4 retrain finishing (see [Roadmap](#roadmap-milestones)).
+> Today's install path is from a clone:
 
 ```bash
 git clone https://github.com/ellyseum/ios_pointer_finder.git
@@ -42,8 +43,8 @@ python scripts/convert_pt_to_safetensors.py pointer_model_v0.3.4_30.5px.pt
 # → pointer_model_v0.3.4_30.5px.safetensors  +  pointer_model_v0.3.4_30.5px.config.json
 ```
 
-**B) Once v0.4 ships and the HF repo is up**, use the one-liner the package is
-designed for:
+**B) Once the HF repo is up** (gated on the v0.4 retrain), use the one-liner the
+package is designed for:
 
 ```python
 import cv2
