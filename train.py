@@ -163,9 +163,13 @@ class PointerDataset(Dataset):
         # downstream xn = e["x"] / NATIVE_W normalization still produces the
         # correct in-image position [0, 1] of the cropped frame interpreted
         # as native-resolution.
+        # v0.4: preserve floats through the rescale — the previous int(round())
+        # truncated subpixel info that the heatmap target Gaussian needs to
+        # converge below ~30 px. Downstream `xn = e["x"] / NATIVE_W` works
+        # equally well on int or float labels.
         if new_label["has_cursor"]:
-            new_label["x"] = int(round(new_label["x"] * NATIVE_W / crop_w))
-            new_label["y"] = int(round(new_label["y"] * NATIVE_H / crop_h))
+            new_label["x"] = new_label["x"] * NATIVE_W / crop_w
+            new_label["y"] = new_label["y"] * NATIVE_H / crop_h
         return img, new_label
 
     def __getitem__(self, i: int):
