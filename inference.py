@@ -172,8 +172,12 @@ class PointerFinder:
         H, W = prob.shape
         flat = int(prob.argmax())
         iy, ix = flat // W, flat % W
-        cx = int(round(ix / max(1, W - 1) * nw))
-        cy = int(round(iy / max(1, H - 1) * nh))
+        # Map heatmap-cell index → native pixel coordinate. The argmax can land
+        # on the last cell (ix == W-1, iy == H-1), and ix / (W-1) * nw == nw —
+        # one pixel past the last valid index. Clamp to [0, nw-1] / [0, nh-1]
+        # so callers can use the result as an array index directly.
+        cx = min(nw - 1, int(round(ix / max(1, W - 1) * nw)))
+        cy = min(nh - 1, int(round(iy / max(1, H - 1) * nh)))
         return PointerPrediction(
             x=cx,
             y=cy,

@@ -48,10 +48,11 @@ def test_prediction_dataclass_unpacks(random_finder: PointerFinder, native_size)
 
 
 def test_prediction_in_native_bounds(random_finder: PointerFinder, native_size):
+    """Predicted (x, y) must be a valid 0-based index into a native-size image."""
     img = np.zeros((native_size[1], native_size[0], 3), dtype=np.uint8)
     pred = random_finder(img)
-    assert 0 <= pred.x <= native_size[0]
-    assert 0 <= pred.y <= native_size[1]
+    assert 0 <= pred.x < native_size[0]
+    assert 0 <= pred.y < native_size[1]
     assert pred.native_size == native_size
 
 
@@ -60,7 +61,8 @@ def test_predict_accepts_arbitrary_resolution(random_finder: PointerFinder, nati
     weird = np.zeros((1500, 800, 3), dtype=np.uint8)
     pred = random_finder(weird)
     assert pred.native_size == native_size
-    assert 0 <= pred.x <= native_size[0]
+    assert 0 <= pred.x < native_size[0]
+    assert 0 <= pred.y < native_size[1]
 
 
 def test_predict_rejects_wrong_channel_count(random_finder: PointerFinder):
