@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "ios_pointer_finder: a tiny CNN for iPhone Pointer-Control cursor detection"
+message: "If you use this software or trained weights, please cite it as below."
+type: software
+authors:
+  - family-names: "Ellyse"
+    given-names: "Jocelyn"
+    email: "jocelyn@ellyseum.dev"
+repository-code: "https://github.com/ellyseum/ios_pointer_finder"
+url: "https://github.com/ellyseum/ios_pointer_finder"
+abstract: >
+  ios_pointer_finder is a 338K-parameter convolutional network that localizes the
+  iPhone Pointer-Control cursor (the small "@-symbol" sprite that iOS draws
+  when an external pointing device is paired) in a single screen-capture
+  image. It is the perception layer of a closed-loop iPhone agent that drives
+  an unmodified phone over BLE HID and AirPlay mirroring, and it is published
+  with code under MIT and weights under CC-BY-4.0.
+keywords:
+  - computer vision
+  - cnn
+  - cursor detection
+  - iphone
+  - automation agent
+  - pointer control
+license: MIT
+license-url: "https://github.com/ellyseum/ios_pointer_finder/blob/main/LICENSE"
+version: "0.3.4"
+date-released: 2026-04-27

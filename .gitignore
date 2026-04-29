@@ -1,6 +1,14 @@
-# Model weights — keep out of git, distribute via Releases
+# Model weights — distributed via Hugging Face Hub + GitHub Releases, never git.
 *.pt
 *.pth
+*.safetensors
+*.onnx
+*.mlpackage
+*.mlmodel
+
+# Sidecar metadata that's emitted alongside .pt during training; the public
+# config.json shipped with the canonical weights goes through Releases.
+pointer_model_*.config.json
 
 # Image assets — backgrounds, real test frames, generated dataset, scratch images
 *.png
@@ -10,13 +18,32 @@
 # Generated training data — re-derive from backgrounds_kept/ via synthesize.py
 dataset/
 backgrounds/
+backgrounds_kept
 backgrounds_kept/
+real_pointer_test
 real_pointer_test/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+
+# Build / install artifacts
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Virtualenvs
+.venv/
+venv/
+.env
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage*
 
 # Editor / OS
 .vscode/

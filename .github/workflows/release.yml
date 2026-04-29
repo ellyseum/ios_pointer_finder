@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.3.4)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,onnx]"
+
+      - name: Locate canonical .pt for this tag
+        id: ckpt
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          # Strip leading v to match pointer_model_vX.Y.Z_*.pt
+          version="${TAG#v}"
+          ckpt=$(ls pointer_model_v${version}_*.pt 2>/dev/null | head -1 || true)
+          if [ -z "$ckpt" ]; then
+            echo "::warning::No checkpoint pointer_model_v${version}_*.pt found in repo. Release will only contain source artifacts."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "path=$ckpt" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Convert .pt -> .safetensors + config.json
+        if: steps.ckpt.outputs.found == 'true'
+        run: |
+          mkdir -p dist
+          python scripts/convert_pt_to_safetensors.py \
+            "${{ steps.ckpt.outputs.path }}" \
+            --out-dir dist
+
+      - name: Export ONNX
+        if: steps.ckpt.outputs.found == 'true'
+        run: |
+          python scripts/export_onnx.py \
+            "${{ steps.ckpt.outputs.path }}" \
+            --out "dist/$(basename ${{ steps.ckpt.outputs.path }} .pt).onnx" \
+            --check || echo "ONNX parity check failed (non-fatal)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body: |
+            See [`CHANGELOG.md`](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.name }}/CHANGELOG.md)
+            and [`docs/MODEL_CARD.md`](https://github.com/${{ github.repository }}/blob/${{ steps.tag.outputs.name }}/docs/MODEL_CARD.md).
+          files: |
+            dist/*.safetensors
+            dist/*.config.json
+            dist/*.onnx
+          fail_on_unmatched_files: false

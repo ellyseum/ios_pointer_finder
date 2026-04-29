@@ -1,24 +1,27 @@
 """
-eval_v03.py — compare v0.2 vs v0.3 on the failure modes v0.3 review
-flagged: localization on real frames (regression check) AND false-positive
-behavior on cursor-free frames (the loss-mask fix's primary target).
+eval_v03.py — compare two checkpoints on the two v0.3 failure modes:
+localization on real frames (regression check) AND false-positive behavior
+on cursor-free frames (the loss-mask fix's primary target).
 
 Usage:
     python eval_v03.py [--v02 path] [--v03 path] [--out dir]
+                       [--real-dir DIR] [--bg-pool DIR]
+
+By default --real-dir and --bg-pool resolve to:
+  IPF_REAL_DIR   (env var)   or   ./real_pointer_test
+  IPF_BG_POOL    (env var)   or   ./backgrounds_kept
 
 Outputs (per model, side-by-side):
-  - real_pointer_test/ frames: pos error, conf, heatmap peak
-  - cursor-free real frames (sampled from backgrounds_kept/ that we held
-    out of training via bg-level val split — verified by reading the
-    val_bg_ids saved in the v0.3 checkpoint metadata if present, otherwise
-    falls back to all backgrounds_kept/ frames as cursor-free since they
-    were captured cursor-off).
+  - frames in --real-dir: pos error, conf, heatmap peak
+  - cursor-free frames sampled from --bg-pool (the val split saved in the
+    v0.3 checkpoint metadata if present, otherwise all bgs in the pool are
+    treated as cursor-free since they were captured cursor-off).
 
 Pass criteria for v0.3 vs v0.2:
   - Real cursor frames: pos err comparable (no regression)
   - Cursor-free frames: conf and peak should DROP markedly
-    (previously 1.000/0.9999 false-positive on Settings notification badge,
-    Calendar dot, etc.; v0.3 should give low conf and flat heatmap)
+    (previously 1.000/0.9999 false-positive on common UI dots / badges;
+    v0.3 should give low conf and a flat heatmap)
 """
 
 from __future__ import annotations
@@ -37,8 +40,12 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 from train import PointerNet, NATIVE_W, NATIVE_H, TRAIN_W, TRAIN_H
 
-REAL_DIR = "./real_pointer_test"
-BG_POOL = "./backgrounds_kept"
+DEFAULT_REAL_DIR = os.environ.get(
+    "IPF_REAL_DIR", os.path.join(ROOT, "real_pointer_test")
+)
+DEFAULT_BG_POOL = os.environ.get(
+    "IPF_BG_POOL", os.path.join(ROOT, "backgrounds_kept")
+)
 
 
 def load_model(path: str, device: torch.device) -> tuple[PointerNet, dict]:
@@ -106,12 +113,14 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--v02", default=os.path.join(ROOT, "pointer_model_v0.2.0.pt"))
     p.add_argument("--v03", default=os.path.join(ROOT, "pointer_model.pt"))
-    p.add_argument("--real-dir", default=REAL_DIR)
-    p.add_argument("--bg-pool", default=BG_POOL,
+    p.add_argument("--real-dir", default=DEFAULT_REAL_DIR,
+                   help=f"directory of real-cursor frames (default: {DEFAULT_REAL_DIR})")
+    p.add_argument("--bg-pool", default=DEFAULT_BG_POOL,
                    help="cursor-free real captures (used to test FPR on real distractors)")
     p.add_argument("--n-cursor-free", type=int, default=20,
                    help="how many cursor-free real frames to sample")
-    p.add_argument("--out", default="./eval_out/v03-eval")
+    p.add_argument("--out", default=os.path.join(ROOT, "eval_out"),
+                   help="output directory for the contact-sheet image")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
 

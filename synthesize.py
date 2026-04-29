@@ -1,7 +1,7 @@
 """
 synthesize.py — generate labeled training data for the ios-pointer-finder CNN.
 
-v0.3 mix (v0.3 update):
+v0.3 sample mix:
   - normal_pos  (default 55%): full-cursor positives, random position with margin
   - edge_pos    (default 15%): cursor partially clipped at a screen edge,
                                 visible-centroid label, reject if visible

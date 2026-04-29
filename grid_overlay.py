@@ -93,10 +93,17 @@ def overlay_grid(img_native: np.ndarray,
 
 
 def _newest_finalized_ring_frame() -> str | None:
-    files = sorted(glob.glob(JPEG_GLOB), key=os.path.getmtime, reverse=True)
-    if not files:
+    """Race-safe: tolerate files rotated out by multifilesink between glob and stat."""
+    pairs: list[tuple[float, str]] = []
+    for f in glob.glob(JPEG_GLOB):
+        try:
+            pairs.append((os.path.getmtime(f), f))
+        except OSError:
+            continue
+    if not pairs:
         return None
-    return files[1] if len(files) >= 2 else files[0]
+    pairs.sort(reverse=True)
+    return pairs[1][1] if len(pairs) >= 2 else pairs[0][1]
 
 
 def main() -> int:

@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an improvement to the model, API, or tooling.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        What can't you do today, or what's harder than it should be?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: |
+        Concretely, what should the API / model / tooling do? Code sketches welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        What else have you tried, and why is this better?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope hint
+      options:
+        - "Code (Python API, CLI)"
+        - "Model (architecture, training)"
+        - "Inference (CoreML/ONNX/quantization)"
+        - "Docs"
+        - "Tooling (CI, scripts)"
+        - "Other"
+    validations:
+      required: true

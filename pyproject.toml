@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ios-pointer-finder"
+description = "Tiny CNN that finds the iPhone Pointer-Control cursor in a screen capture."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Jocelyn Ellyse", email = "jocelyn@ellyseum.dev" },
+]
+keywords = [
+    "computer-vision",
+    "cnn",
+    "cursor-detection",
+    "iphone",
+    "agent",
+    "automation",
+    "pointer-control",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dynamic = ["version"]
+
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "torch>=2.1",
+]
+
+[project.optional-dependencies]
+safetensors = ["safetensors>=0.4"]
+onnx = ["onnx>=1.15", "onnxruntime>=1.17"]
+hub = ["huggingface_hub>=0.24"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+    "safetensors>=0.4",
+]
+all = [
+    "ios-pointer-finder[safetensors,onnx,hub,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/ellyseum/ios_pointer_finder"
+Documentation = "https://github.com/ellyseum/ios_pointer_finder#readme"
+Repository = "https://github.com/ellyseum/ios_pointer_finder"
+Issues = "https://github.com/ellyseum/ios_pointer_finder/issues"
+Changelog = "https://github.com/ellyseum/ios_pointer_finder/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ios-pointer-finder = "cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "inference",
+    "model",
+    "train",
+    "synthesize",
+    "eval_v03",
+    "click_at",
+    "capture_backgrounds",
+    "extract_sprite",
+    "grid_overlay",
+    "keep_picker",
+    "cli",
+]
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "backgrounds_kept",
+    "dataset",
+    "real_pointer_test",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function call in default arg (PyTorch idiom)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "F401"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: tests that download or use the GPU heavily",
+    "weights: tests that need a checkpoint file present",
+]
