@@ -68,7 +68,6 @@ ipf = "cli:main"
 [tool.setuptools]
 py-modules = [
     "inference",
-    "model",
     "train",
     "synthesize",
     "eval_v03",
