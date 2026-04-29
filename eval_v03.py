@@ -49,8 +49,28 @@ DEFAULT_BG_POOL = os.environ.get(
 
 
 def load_model(path: str, device: torch.device) -> tuple[PointerNet, dict]:
-    ckpt = torch.load(path, map_location=device, weights_only=False)
+    """Load .pt (legacy, with metadata dict) or .safetensors (state-dict only,
+    optional sidecar config.json next to it)."""
     m = PointerNet().to(device).eval()
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix == ".safetensors":
+        try:
+            from safetensors.torch import load_file
+        except ImportError as e:
+            raise SystemExit(
+                "Loading .safetensors needs the safetensors package: "
+                "pip install 'ios-pointer-finder[safetensors]'"
+            ) from e
+        state = load_file(path, device=str(device))
+        m.load_state_dict(state)
+        # Sidecar: cursor_model_v0.3.4.config.json next to the .safetensors
+        sidecar = os.path.splitext(path)[0] + ".config.json"
+        meta: dict = {}
+        if os.path.isfile(sidecar):
+            with open(sidecar) as f:
+                meta = json.load(f)
+        return m, meta
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     m.load_state_dict(ckpt["model"])
     return m, ckpt
 
