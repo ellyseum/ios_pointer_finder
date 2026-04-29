@@ -1,15 +1,19 @@
 """
-train.py — train a tiny CNN to find the iPhone BLE cursor in a snap.
+train.py — train a tiny CNN to find the iPhone Pointer-Control cursor in a
+screen capture.
 
-Architecture: small backbone (~250K params) → two heads:
-  - regression: outputs (x_norm, y_norm) ∈ [0, 1]² — cursor center
-  - confidence: outputs σ ∈ [0, 1]            — prob cursor present
+Architecture: small backbone (~338K params) → three heads:
+  - heatmap:    1×1 conv at 1/8 of train resolution — primary localization signal
+  - regression: outputs (x_norm, y_norm) ∈ [0, 1]² — kept for backward compat
+  - confidence: outputs P(cursor present) ∈ [0, 1]
 
-Loss: MSE on (x, y) for positive samples + BCE on confidence for all.
+Loss: heatmap BCE (positives only via mask, plus a scaled negatives term) +
+MSE on (x, y) for positives + BCE on confidence for all.
 
-Input: training images downsampled to TRAIN_W x TRAIN_H. Native captures are
-994 x 2160. We downsample 4x to 248 x 540 — fast inference, still enough
-detail to localize an 81-px cursor (≈20 px in downsampled space).
+Input: native captures are 994 × 2160 (NATIVE_W × NATIVE_H). We downsample 2×
+to 497 × 1080 (TRAIN_W × TRAIN_H) — fast inference, still enough detail for the
+cursor sprite (~46 native px ≈ 23 px in train space) to form a sharp peak in
+the 1/8-stride feature map.
 """
 
 from __future__ import annotations
@@ -60,8 +64,9 @@ SAMPLE_TYPES_INV = {v: k for k, v in SAMPLE_TYPES.items()}
 
 class PointerDataset(Dataset):
     """
-    BG-LEVEL train/val split.
-    Hold out a fraction of unique bg_ids; all samples from those bgs go to val.
+    BG-LEVEL train/val split: a sample-level shuffle leaks backgrounds into
+    both train and val and makes val_pos_err artificially low. Instead, hold
+    out a fraction of unique bg_ids; all samples from those bgs go to val.
     Falls back to sample-level split with a warning if labels lack bg_id
     (legacy datasets only).
     """
@@ -69,10 +74,10 @@ class PointerDataset(Dataset):
                  val_bg_ids: set[str] | None = None,
                  augment: bool = False):
         """augment=True turns on train-time random crop + flip + photometric jitter
-        in __getitem__. This is the highest-leverage anti-overfit
-        change: with only 106 train backgrounds, returning the same baked JPEG
-        every epoch lets the network memorize specific bg textures. Online
-        augmentation breaks the spatial/photometric memorization shortcut."""
+        in __getitem__. With only ~100 train backgrounds, returning the same baked
+        JPEG every epoch lets the network memorize specific bg textures. Online
+        augmentation breaks the spatial/photometric memorization shortcut and is
+        the highest-leverage anti-overfit change in v0.3.1."""
         with open(os.path.join(dataset_dir, "labels.jsonl")) as f:
             all_labels = [json.loads(line) for line in f if line.strip()]
 
@@ -192,10 +197,10 @@ class PointerNet(nn.Module):
     cursor location. This preserves spatial information (unlike a GAP+regression
     architecture which collapses 'where' info before the head).
 
-    Backbone: 4 stride-2 convs → 16x downsample. On 248x540 input the heatmap
-    is 16x34. We use soft-argmax (spatial softmax + expected position) so the
-    model can be trained with MSE on (x_norm, y_norm) directly — fully
-    differentiable, sub-pixel accurate, no need for Gaussian-target heatmap loss.
+    Backbone: 3 stride-2 convs + 2 stride-1 convs → 1/8 downsample of TRAIN
+    resolution (497 × 1080 → 63 × 135 feature map). We supervise both with a
+    Gaussian-target heatmap BCE loss AND a soft-argmax MSE on (x_norm, y_norm),
+    weighted-summed; inference uses hard argmax on the heatmap.
 
     Confidence head: predicts log-probability that any cursor is in frame, from
     a global-pooled sibling branch.
@@ -205,7 +210,8 @@ class PointerNet(nn.Module):
         # 3 stride-2 blocks → 1/8 downsample. With 46-px cursor at 1/4 train
         # resolution = 11.5 px, at 1/8 feature map = ~5-6 pixel peak. Was 4
         # blocks (1/16) which gave only ~3-px peak — too small to learn.
-        # v0.3.1: Dropout2d after the last two conv blocks.
+        # v0.3.1: Dropout2d after the last two conv blocks to fight bg-texture
+        # memorization at this 338K-param scale.
         self.backbone = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
             nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
@@ -247,7 +253,7 @@ def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
     sigma_px = stddev in heatmap pixel units. Cursor is ~46 native px = ~3 px
     in feature map at 1/16 resolution, so sigma=2.0 gives a peak slightly
     wider than the cursor itself — enough gradient signal without training
-    diffuse predictions.
+    diffuse predictions. (sigma=4.0 trains a too-broad target.)
     """
     B = target_xy_norm.shape[0]
     device = target_xy_norm.device
@@ -303,13 +309,13 @@ def train_loop(args):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
-    # Loss weights (v0.3 — v0.3 fixes)
+    # Loss weights (v0.3)
     HM_WEIGHT = 10.0          # heatmap BCE total
-    HM_NEG_REL = 0.5          # neg term scaled relative to pos (Codex)
+    HM_NEG_REL = 0.5          # neg term scaled relative to pos
     XY_WEIGHT_WARMUP = 5.0    # soft-argmax MSE — full first 5 epochs
-    XY_WEIGHT_LATE = 2.5      # demoted after warmup (Codex: hard-argmax inference)
+    XY_WEIGHT_LATE = 2.5      # demoted after warmup; inference uses hard argmax
     XY_WARMUP_EPOCHS = 5
-    CONF_WEIGHT = 2.0         # bumped from 1.0 (Gemini: conf needs more pressure)
+    CONF_WEIGHT = 2.0         # bumped from 1.0 — conf head needs more pressure
 
     # Carry over the previous run's best so we don't overwrite a better
     # checkpoint with the first eval of this run (especially after warmup).
@@ -334,13 +340,15 @@ def train_loop(args):
             neg_count = neg_mask.sum().clamp_min(1.0)
 
             # Build target heatmap; ZERO for negatives so no peak is correct.
-            #
+            # (v0.3 fix — negatives previously had zero loss contribution via
+            # the positive-only mask, so the model never learned the "no cursor
+            # → flat heatmap" supervision signal.)
             target_hm_pos = make_target_heatmap(target_xy, H, W, sigma_px=2.0)
             target_hm = target_hm_pos * pos_mask.view(-1, 1, 1, 1)
             hm_loss_per_b = F.binary_cross_entropy_with_logits(
                 pred_hm.squeeze(1), target_hm.squeeze(1), reduction='none'
             ).mean(dim=(1, 2))
-            # Split pos/neg terms — explicit control as data mix shifts
+            # Split pos/neg terms — explicit control as data mix shifts.
             hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
             hm_neg_loss = (hm_loss_per_b * neg_mask).sum() / neg_count
             hm_loss = hm_pos_loss + HM_NEG_REL * hm_neg_loss
@@ -474,8 +482,7 @@ def main() -> int:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=1e-3,
-                   help="v0.3.1 bumped from 1e-4 → 1e-3: "
-                        "middle ground between Codex (1e-3) and Gemini (1e-2)")
+                   help="v0.3.1 bumped from 1e-4 → 1e-3 to fight bg-texture overfit.")
     p.add_argument("--workers", type=int, default=8,
                    help="DataLoader workers; bumped from 4 to 8 in v0.3.1+ since "
                         "train-time augmentation made data loading more CPU-heavy")

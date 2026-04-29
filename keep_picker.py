@@ -125,17 +125,38 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
 
+def _parse_cli(argv: list[str]) -> tuple[int, str | None, str | None]:
+    """Returns (port, cert_path, key_path). HTTPS used iff both cert paths
+    exist on disk; otherwise plain HTTP. Override with the env vars below or
+    via positional CLI:
+
+        python keep_picker.py [PORT] [--http]
+        IPF_CERT=/path/to/fullchain.pem \
+        IPF_KEY=/path/to/privkey.pem \
+            python keep_picker.py 4444
+    """
+    port = 4444
+    for a in argv[1:]:
+        if a.isdigit():
+            port = int(a)
+    if "--http" in argv:
+        return port, None, None
+    cert = os.environ.get("IPF_CERT")
+    key = os.environ.get("IPF_KEY")
+    if cert and key and os.path.isfile(cert) and os.path.isfile(key):
+        return port, cert, key
+    return port, None, None
+
+
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 4444
-    cert_dir = os.path.expanduser("~/.local/share/certbot/live/your-domain")
-    use_https = os.path.isfile(f"{cert_dir}/fullchain.pem") and "--http" not in sys.argv
+    port, cert_path, key_path = _parse_cli(sys.argv)
     os.makedirs(BG_DIR, exist_ok=True)
     os.makedirs(KEEP_DIR, exist_ok=True)
     server = HTTPServer(("0.0.0.0", port), Handler)
     proto = "http"
-    if use_https:
+    if cert_path and key_path:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(f"{cert_dir}/fullchain.pem", f"{cert_dir}/privkey.pem")
+        ctx.load_cert_chain(cert_path, key_path)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
         proto = "https"
     print(f"keep_picker on {proto}://0.0.0.0:{port}/", flush=True)

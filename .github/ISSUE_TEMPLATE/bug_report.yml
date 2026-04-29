@@ -1,0 +1,64 @@
+name: Bug report
+description: A reproducible failure case in ios_pointer_finder.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! Concrete reproductions help us turn issues into fixes quickly.
+
+  - type: input
+    id: model_version
+    attributes:
+      label: Model version
+      description: Output of `ios-pointer-finder version` (or the .pt/.safetensors filename).
+      placeholder: e.g. v0.3.4
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version, torch version. Output of `python -V` and `pip show torch`.
+      placeholder: e.g. Ubuntu 22.04 (WSL2), Python 3.11, torch 2.3.0+cpu
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what actually occurred?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Minimal code or commands. If image-dependent, attach the image (or a redacted version).
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: prediction
+    attributes:
+      label: Predicted vs expected
+      description: |
+        e.g. "model says (337, 580) conf=0.94, but the cursor is at (656, 1424) in the attached image."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I'm using a published checkpoint (not a personal retrain) OR I can reproduce on a published checkpoint.
+          required: false
+        - label: I've read the model card (`docs/MODEL_CARD.md`) and confirmed my use case is in scope.
+          required: false

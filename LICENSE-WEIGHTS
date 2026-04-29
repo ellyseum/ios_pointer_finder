@@ -1,0 +1,17 @@
+Model Weights License (CC-BY-4.0)
+=================================
+
+The trained model weights distributed alongside this repository (and in
+linked GitHub Releases / Hugging Face Hub mirrors) are released under the
+Creative Commons Attribution 4.0 International License (CC BY 4.0).
+
+Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+In short:
+  - You are free to share and adapt the weights for any purpose, including
+    commercial use.
+  - You must give appropriate credit (this repo, the version, and a link to
+    https://github.com/ellyseum/ios_pointer_finder), provide a link to the
+    license, and indicate if changes were made.
+
+The repository code itself is licensed separately under MIT (see LICENSE).
