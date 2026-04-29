@@ -69,11 +69,11 @@ Feature map (128, 135, 63)     # 1/8 of train resolution = 1/16 of native
    └── global avg pool + MLP   →  confidence logit (1)
 ```
 
-The heatmap is the primary localization signal. Argmax + parabolic subpixel
-refinement gives the cursor center in the feature-space coordinates; we
-scale back to native (994 × 2160) for output via normalized coordinates
-(no stride math required at inference time). The confidence head is trained
-as a binary classifier on `has_cursor` and used as a presence gate.
+The heatmap is the primary localization signal. v0.3.x uses a plain argmax
+on the heatmap, scaled back to native (994 × 2160) via normalized coordinates
+(no stride math at inference time). Parabolic subpixel refinement is planned
+for v0.4. The confidence head is trained as a binary classifier on
+`has_cursor` and used as a presence gate.
 
 The original architecture also had a regression head (xy MLP). It survives in
 the forward pass for backward compatibility with old eval harnesses, but the

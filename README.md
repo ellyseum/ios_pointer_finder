@@ -23,27 +23,47 @@ that drives an unmodified phone over BLE HID + AirPlay mirroring.
 
 ## Quickstart
 
+> **Status:** PyPI publish + Hugging Face Hub model repo are both **planned for v0.4
+> release** (see [Roadmap](#roadmap-milestones)). Today's install path is from a clone:
+
 ```bash
-pip install ios-pointer-finder
+git clone https://github.com/ellyseum/ios_pointer_finder.git
+cd ios_pointer_finder
+pip install -e ".[hub,safetensors]"
 ```
+
+Then either:
+
+**A) Train your own weights** (see [Train your own](#train-your-own) below) — produces
+`pointer_model_v{X}.{Y}.{Z}_{err}px.pt`. Convert with:
+
+```bash
+python scripts/convert_pt_to_safetensors.py pointer_model_v0.3.4_30.5px.pt
+# → pointer_model_v0.3.4_30.5px.safetensors  +  pointer_model_v0.3.4_30.5px.config.json
+```
+
+**B) Once v0.4 ships and the HF repo is up**, use the one-liner the package is
+designed for:
 
 ```python
 import cv2
 from inference import PointerFinder
 
-# 994x2160 BGR uint8 — your iPhone screen capture (or any size — auto-resized)
-img = cv2.imread("snap.jpg")
-
-finder = PointerFinder.from_pretrained("ellyseum/ios_pointer_finder")  # downloads weights from HF Hub
+img = cv2.imread("snap.jpg")  # any resolution — auto-resized to native (994×2160)
+finder = PointerFinder.from_pretrained("ellyseum/ios_pointer_finder")
 result = finder(img)
-
 print(result.x, result.y, result.confidence, result.heatmap_peak)
 # 656 1424 0.94 0.81
 ```
 
-`PointerFinder.from_pretrained()` accepts a Hugging Face repo id, a local `.safetensors`
-path, or a local `.pt` file. See [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) for the full
-inference contract and provenance.
+For now (path A), call `PointerFinder` with a local `.safetensors` or `.pt` path:
+
+```python
+from inference import PointerFinder
+finder = PointerFinder.from_pretrained("./pointer_model_v0.3.4_30.5px.safetensors")
+```
+
+See [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) for the full inference contract and provenance.
 
 ---
 
@@ -66,7 +86,7 @@ cursor finder answers "where's the cursor" continuously.
 |----------------------|------------------------------------------------------|
 | Architecture         | 5-block conv backbone → 1×1 heatmap head + conf head |
 | Parameters           | 338,274                                              |
-| File size            | 1.3 MB (.safetensors fp32) / 340 KB (int8 quantized) |
+| File size            | 1.3 MB (.safetensors fp32; int8 quantization planned for v0.4) |
 | Native input         | 994 × 2160 (iPhone H264 stream)                      |
 | Train input          | 497 × 1080 (2× downsample)                           |
 | Heatmap stride       | 1/8 of train resolution (≈ 1/16 of native after the 2× input downsample) |
@@ -90,7 +110,7 @@ iPhone screen capture (994×2160 BGR)
         ▼
    conv backbone (3 stride-2 + 2 stride-1 blocks → 1/8 of train resolution)
         │
-        ├── heatmap head (1×1 conv) → 63×135 sigmoid map → argmax + parabolic refine → (cx, cy) in native px
+        ├── heatmap head (1×1 conv) → 63×135 sigmoid map → argmax → (cx, cy) in native px
         └── conf head (global avg pool → MLP) → P(cursor present)
 ```
 
@@ -111,6 +131,7 @@ schedule writeup.
 |--------:|------------:|----------------:|---------------------:|-------------------------:|
 | v0.2    | 73.9 px     | 27%             | 41/50                | 10                       |
 | v0.3.0  | 30.8 px*    | 8%              | 47/50                | 10                       |
+| v0.3.1  | 39.6 px     | 6%              | 48/50                | 10                       |
 | v0.3.2  | 43.4 px     | 5%              | 48/50                | 10                       |
 | v0.3.3  | 35.4 px     | 3%              | 49/50                | 10                       |
 | **v0.3.4** | **30.5 px** | **<2%** | **49/50** | **10** |
