@@ -162,7 +162,7 @@ ios_pointer_finder/
 ├── extract_sprite.py      # extract a real cursor sprite from a screen capture (optional)
 ├── grid_overlay.py        # debug overlay
 ├── keep_picker.py         # interactive background curation
-├── cli.py                 # `ios-pointer-finder` console entry point
+├── cli.py                 # `ipf` console entry point
 ├── scripts/
 │   ├── convert_pt_to_safetensors.py   # one-shot .pt → .safetensors converter
 │   ├── export_onnx.py                 # ONNX export
@@ -268,7 +268,7 @@ device" to "works on any current iPhone."
 ```bibtex
 @software{ios_pointer_finder_2026,
   author       = {Jocelyn Ellyse},
-  title        = {cursor\_finder: a tiny CNN for iPhone Pointer-Control cursor detection},
+  title        = {ios\_pointer\_finder: a tiny CNN for iPhone Pointer-Control cursor detection},
   year         = {2026},
   url          = {https://github.com/ellyseum/ios_pointer_finder},
   version      = {0.3.4}

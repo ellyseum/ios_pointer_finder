@@ -76,7 +76,7 @@ We follow a slightly tighter semver:
 Use the GitHub Issues bug-report template. The most useful issues include:
 
 - A concrete failure case (image + expected vs actual prediction).
-- The model version (`ios-pointer-finder version`) and runtime (`python -V`, `pip show torch`).
+- The model version (`ipf version`) and runtime (`python -V`, `pip show torch`).
 - Whether you can reproduce on the published checkpoint or only your own trained one.
 
 ## Code of Conduct

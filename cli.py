@@ -1,9 +1,9 @@
 """Command-line entry point for ios-pointer-finder.
 
-Installed as the `ios-pointer-finder` console script via pyproject.toml.
+Installed as the `ipf` console script via pyproject.toml.
 
-    ios-pointer-finder predict <image> [--weights PATH] [--device DEV] [--json]
-    ios-pointer-finder version
+    ipf predict <image> [--weights PATH] [--device DEV] [--json]
+    ipf version
 
 For training / synthesis / eval, run the underlying scripts directly:
     python train.py ...
