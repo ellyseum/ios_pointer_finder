@@ -17,6 +17,8 @@ the iPhone Pointer-Control cursor from a single screen-capture image.
 | Throughput                   | 95 fps                                           |
 | Validation pos-error         | 30.5 px (bg-level held-out split, 12 unseen bgs) |
 | Cursor-free FPR              | <2% at conf ≥ 0.5                                |
+| Calibration device           | iPhone 16 Pro Max (`iPhone17,2`), iOS 26.3.1     |
+| Native capture resolution    | 994 × 2160 (iPhone 16 Pro Max AirPlay H264 stream) |
 | Weights license              | CC-BY-4.0                                        |
 
 ## Intended use
@@ -28,6 +30,24 @@ cursor sprite that appears when an external pointing device is paired with
 iOS — it doesn't generalize to macOS pointers, web cursors, or other
 overlays.
 
+## Calibration / device assumptions
+
+The published checkpoints were trained and evaluated against a single
+device: **iPhone 16 Pro Max (`iPhone17,2`)** running **iOS 26.3.1**, in
+**portrait** orientation. The native capture resolution coming off AirPlay
+mirroring on that device is 994×2160, which is what `NATIVE_W` / `NATIVE_H`
+in `train.py` are pinned to and what the heatmap argmax scales back to.
+
+Other current iPhones (16 / 16 Pro / 16 Plus, 15 series) likely produce
+useful predictions out of the box at acceptable accuracy because the
+cursor sprite size, alpha, and shape are iOS-system-wide and do not
+change per device. Smaller / older iPhones (iPhone 13 mini etc.) and
+iPad will likely need a retrain — different stream resolutions, different
+status-bar heights, different home-screen densities.
+
+The v0.5+ bootstrap loop (see Roadmap) is designed to absorb this by
+self-labeling new device captures rather than synthesizing more.
+
 ## Out-of-scope
 
 - Detecting the cursor *trail* during fast moves (we predict instantaneous
@@ -35,6 +55,7 @@ overlays.
 - Multi-cursor scenes.
 - iOS macros/Switch Control overlays.
 - Landscape orientation (training distribution is portrait 994×2160).
+- Devices other than iPhone 16 Pro Max (until v0.6+ generalization).
 
 ## Architecture
 

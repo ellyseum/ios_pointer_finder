@@ -134,12 +134,24 @@ attaches the canonical checkpoint to a GitHub Release.
 
 ## Road from here
 
-- **v0.4** — float-label propagation through augmentation; parabolic subpixel
-  refinement at inference time; honest comparison vs the published v0.3.4.
-  Target: <20 px val pos err.
-- **v0.5** — bootstrap loop: a trained agent runs the cursor across the
-  screen and records "cursor was here at frame N" as verified labels. This
-  lifts the synthetic-data ceiling because we get supervision from real
-  iPhone behavior rather than synthesis assumptions.
-- **v0.6+** — multi-cursor support, landscape, additional perception heads
-  (UI element classifier).
+The shipped checkpoints are calibrated on a single device — iPhone 16 Pro
+Max, iOS 26.3.1, portrait. The model evolves from there in three stages:
+
+**Correctness (v0.4).** Float-label propagation through augmentation;
+parabolic subpixel refinement at inference; ONNX + CoreML + tfjs export
+with numerical parity vs the PyTorch reference; int8 quantization
+ablation. Target: <20 px val pos err on the same calibration device.
+
+**Bootstrap loop (v0.5).** Eliminate the synthetic-data ceiling by
+self-labeling. A v0.4-grade agent drives the cursor across the screen,
+captures real frames, and emits verified labels via a move-and-undo dance
+(motion existence + reversibility supplies ground truth — *not* the
+commanded BLE-HID magnitude, which is iOS-tracking-speed-dependent).
+Retrain on real-cursor data instead of synthesis. Iterate.
+
+**Generalization (v0.6+).** Run the bootstrap loop on each currently-shipping
+iPhone (15 / 15 Pro / 16 / 16 Pro / 16 Plus / 16 Pro Max). Combine the
+collected datasets, train one model that handles any current iPhone in
+portrait and landscape. Add a second perception head for per-app UI
+elements (buttons, text fields, dialogs) so the agent layer can address
+elements by name instead of pixel coordinates.
