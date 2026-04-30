@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """
 Crop the AssistiveTouch BLE-cursor dot out of a snap, save as RGBA sprite.
+
+OUTPUT MUST BE VISUALLY VERIFIED BEFORE COMMIT TO sprites/.
+A previous extraction misidentified a UI badge as the cursor and the
+mistake survived five months of training because no one opened the file.
+The synthesizer will refuse to load any sprite without an approved
+sidecar manifest at <stem>.config.json (see synthesize._load_real_sprite).
+The accepted approval flow:
+  1. Run this script.
+  2. Open the output PNG. Confirm it looks like the iOS Pointer cursor —
+     a translucent gray dot with soft falloff, NOT a UI element.
+  3. Generate the sidecar with the file's sha256 + your name + ISO date.
+  4. Only then commit.
+
 Inputs:
   --snap <path>      JPEG snapshot showing the cursor against ~black background
   --center x,y       JPEG pixel coords where the cursor center is (eyeballed)
