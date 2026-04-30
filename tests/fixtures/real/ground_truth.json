@@ -1,0 +1,67 @@
+{
+  "_doc": "Ground truth for real-frame regression fixtures. bg-00000 is hand-annotated; others are bootstrapped from v0.4.0 22.9px predictions (\u00b1~25px expected).",
+  "_source_weights": "pointer_model_v0.4.0_22.9px.pt",
+  "frames": {
+    "bg-00000.png": {
+      "x": 656,
+      "y": 1424,
+      "confidence": 0.9998189806938171,
+      "heatmap_peak": 0.9999897480010986,
+      "source": "hand",
+      "v04_pred": [
+        654.0,
+        1431.0
+      ],
+      "v04_err_px": 7.280109889280518
+    },
+    "bg-00001.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.999828577041626,
+      "heatmap_peak": 0.9999933242797852,
+      "source": "v0.4-bootstrap"
+    },
+    "bg-00002.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.999758780002594,
+      "heatmap_peak": 0.9999905824661255,
+      "source": "v0.4-bootstrap"
+    },
+    "bg-00005.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.9998569488525391,
+      "heatmap_peak": 0.9999967813491821,
+      "source": "v0.4-bootstrap"
+    },
+    "bg-00006.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.9997947812080383,
+      "heatmap_peak": 1.0,
+      "source": "v0.4-bootstrap"
+    },
+    "bg-00007.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.9979401230812073,
+      "heatmap_peak": 0.999794065952301,
+      "source": "v0.4-bootstrap"
+    },
+    "bg-00008.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.9994416832923889,
+      "heatmap_peak": 0.9999996423721313,
+      "source": "v0.4-bootstrap"
+    },
+    "bg-00009.png": {
+      "x": 654.0,
+      "y": 1431.0,
+      "confidence": 0.9971617460250854,
+      "heatmap_peak": 0.999998927116394,
+      "source": "v0.4-bootstrap"
+    }
+  }
+}
