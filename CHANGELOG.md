@@ -2,6 +2,27 @@
 
 All notable changes to ios_pointer_finder are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning per `bump.sh` policy (see `CONTRIBUTING.md`).
 
+## [0.6.1] - Unreleased
+
+### Added
+- `--seed` and `--strict-determinism` flags on `train.py`. Global RNG seeding now happens at startup (Python `random`, numpy, torch CPU + CUDA). With `--strict-determinism`, also pins `cudnn.deterministic=True` and `torch.use_deterministic_algorithms(True)` for bit-exact repeats.
+- `val_bg_ids` is persisted in the checkpoint (and config-json sidecar). On resume, the val membership is inherited from the checkpoint so val_pos_err stays measured against the same held-out bgs across resume boundaries.
+- `safetensors` resume in `click_at.py` (was `.pt`-only).
+
+### Changed
+- bg-level train/val split now uses a stable hash-based assignment (`zlib.adler32(bg_id) % 100 < val_frac*100`). Adding or removing a background to the dataset no longer reshuffles which OTHER backgrounds land in val. Replaces the index-sensitive `random.Random(42).sample`.
+- `_worker_init_fn` no longer double-offsets by `worker_id` — `torch.initial_seed()` already encodes it via DataLoader's per-worker reseed.
+- `gen_edge_pos` now rejects samples that landed fully on-frame instead of tagging them `edge_pos`. Cleaner slice metric, and removes a quiet "tagged edge but actually unclipped" path that lost crop augmentation in `train.py`.
+- `gen_hard_neg` margin now scales with the largest decoy dimension (e.g., wide ellipses up to 119 px wide). Previously, default `margin=50` allowed wide decoys to compose-clip at the frame edge and contradict the `edge_pos` slice's "clipped cursor = positive" supervision.
+- `gen_hard_neg` `decoy_pos` is now the alpha-mass centroid of the decoy, not the canvas center. Fixes mis-protection of asymmetric decoys (`doubled_dot` especially — canvas center was the gap between two dots).
+- `test_real_bbox.py:heatmap_to_bbox` reports the canonical decoder's center (argmax + parabolic on logits + stride-aware) instead of the upsampled-grid argmax. Bbox CC analysis unchanged.
+- Updated module / class docstrings to reflect the v0.6 forward signature (2-tuple) and removal of the soft-argmax regression head.
+
+### Fixed
+- `eval_v03.py` crashed on `.safetensors` checkpoints with no sidecar metadata (`f"{None:.1f}"` raised `TypeError`). Now prints `n/a` for missing fields.
+- ONNX export docstring now correctly states the heatmap stride (1/8 of train, 1/16 of native) — was incorrectly listed as 1/16 of train.
+- `tests/test_model.py:test_forward_shape_eval` tightens the conf shape assertion to `(B,)` only — the legacy `(B, 1)` tolerance accepted a shape the current forward doesn't produce.
+
 ## [0.5.1] - Unreleased
 
 ### Changed (BREAKING)

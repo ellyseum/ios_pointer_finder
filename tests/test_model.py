@@ -32,7 +32,10 @@ def test_forward_shape_eval():
     assert len(out) == 2, f"expected 2 outputs (conf, heatmap), got {len(out)}"
 
     conf, hm = out
-    assert conf.shape in {(1, 1), (1,)}, f"conf shape: {conf.shape}"
+    # conf head squeezes channel dim → (B,). Asserting both shapes was a
+    # legacy-compat tolerance from the v0.4 era; the v0.6 forward only
+    # produces (B,), so assert exactly that.
+    assert conf.shape == (1,), f"conf shape: {conf.shape}"
     assert hm.dim() == 4 and hm.shape[0] == 1 and hm.shape[1] == 1, f"hm shape: {hm.shape}"
     # 1/8 stride of the train resolution (3 stride-2 conv blocks).
     assert hm.shape[2] in {TRAIN_H // 8, TRAIN_H // 8 + 1}, f"hm height: {hm.shape[2]}"

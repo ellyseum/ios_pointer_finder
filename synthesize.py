@@ -438,6 +438,20 @@ def gen_edge_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict] | 
         sprite_alpha, cx_geom, cy_geom)
     if visible_frac < MIN_VISIBLE_FRAC:
         return None
+    # Reject samples that landed fully on-frame: with `edge_offset` ranging
+    # up to `margin // 2`, a non-trivial fraction of "edge_pos" picks were
+    # actually unclipped. Tagging them as edge_pos contaminated the slice
+    # AND made train.py skip crop augmentation on what are really normal
+    # positives. Bounce these back as None so the synth loop counts them
+    # as rejects and the per-bg sample budget stays accurate.
+    sprite_left = cx_geom - pw // 2
+    sprite_top = cy_geom - ph // 2
+    sprite_right = sprite_left + pw
+    sprite_bottom = sprite_top + ph
+    is_actually_clipped = (sprite_left < 0 or sprite_top < 0
+                          or sprite_right > W or sprite_bottom > H)
+    if not is_actually_clipped:
+        return None
     py0 = max(0, cy_geom - ph // 2); px0 = max(0, cx_geom - pw // 2)
     py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
     if py0 >= py1 or px0 >= px1:
@@ -461,8 +475,14 @@ def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     decoy_type = random.choice(HARD_NEG_TYPES)
     sprite = make_decoy(decoy_type)
     ph, pw = sprite.shape
-    cx = random.randint(margin, W - margin)
-    cy = random.randint(margin, H - margin)
+    # Wide decoys (`make_decoy_ellipse` reaches 119 px wide) need more
+    # margin than the default 50 px so they don't compose-clip at the edge,
+    # which would create "edge-clipped cursor-like blob = negative" samples
+    # that contradict the edge_pos slice's "clipped cursor = positive"
+    # supervision.
+    decoy_margin = max(margin, pw // 2 + 4, ph // 2 + 4)
+    cx = random.randint(decoy_margin, W - decoy_margin)
+    cy = random.randint(decoy_margin, H - decoy_margin)
     # Match gen_normal_pos's `py0:py0+ph` patch convention; `cy ± ph // 2`
     # truncates one row/col on odd-height decoys (ibeam, ring), biasing
     # pick_cursor_color by a sub-pixel luminance drift.
@@ -476,9 +496,26 @@ def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     # decoy footprint. Without this, hard_neg crops can clip large decoys
     # and turn "edge-clipped cursor-like blob = negative" into supervision
     # that directly contradicts edge_pos's "clipped cursor = positive".
+    #
+    # `decoy_pos` reports the alpha-mass centroid of the decoy (in image
+    # coords), not the canvas center. Some decoy generators
+    # (`make_decoy_doubled_dot` especially) place asymmetric mass — the
+    # canvas-center for that decoy is the gap between two dots, not where
+    # the visual mass actually is. The crop guard needs the real centroid.
+    yy_d, xx_d = np.indices(sprite.shape, dtype=np.float32)
+    mass = float(sprite.sum())
+    if mass > 1e-6:
+        local_cx = float((sprite * xx_d).sum() / mass)
+        local_cy = float((sprite * yy_d).sum() / mass)
+    else:
+        local_cx = (pw - 1) / 2.0
+        local_cy = (ph - 1) / 2.0
+    decoy_anchor_x = float(cx - pw // 2) + local_cx
+    decoy_anchor_y = float(cy - ph // 2) + local_cy
     return augment(bg), {
         "x": -1, "y": -1, "has_cursor": 0, "sample_type": "hard_neg",
-        "decoy_type": decoy_type, "decoy_pos": [cx, cy],
+        "decoy_type": decoy_type,
+        "decoy_pos": [round(decoy_anchor_x, 2), round(decoy_anchor_y, 2)],
         "decoy_w": pw, "decoy_h": ph,
     }
 

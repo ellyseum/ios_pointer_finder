@@ -175,8 +175,12 @@ def main() -> int:
             print(f"[skip] {label} not found: {weight_path}")
             continue
         model, ckpt = load_model(weight_path, device)
-        print(f"=== {label}: epoch={ckpt.get('epoch')} "
-              f"val_pos_err={ckpt.get('val_pos_err_px'):.1f}px ===")
+        # `.safetensors` checkpoints with no sidecar return an empty meta
+        # dict; format `None:.1f` would raise. Default to NaN for the print.
+        _vpe = ckpt.get("val_pos_err_px")
+        _vpe_str = "n/a" if _vpe is None else f"{_vpe:.1f}px"
+        print(f"=== {label}: epoch={ckpt.get('epoch', '?')} "
+              f"val_pos_err={_vpe_str} ===")
         real_res = evaluate_on_dir(model, real_paths, device, f"{label}_real", gt)
         free_res = evaluate_on_dir(model, bg_pool_paths, device, f"{label}_free")
         for tag, res in [("real_cursor", real_res), ("cursor_free", free_res)]:

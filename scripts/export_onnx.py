@@ -8,7 +8,10 @@ Usage:
 The exported ONNX has:
   - input  "image":   float32 [1, 3, TRAIN_H, TRAIN_W] in [-2, 2] normalized space
   - output "conf":    float32 [1]      — confidence logit
-  - output "heatmap": float32 [1, 1, H/16, W/16]
+  - output "heatmap": float32 [1, 1, TRAIN_H/8, TRAIN_W/8]
+                                       (3 stride-2 conv blocks → 1/8 of train
+                                        resolution, which is itself 2× downsampled
+                                        from native, so 1/16 of native overall)
 
 v0.5.1: removed the "xy" output. PointerNet.forward no longer computes the
 soft-argmax regression head (it was unused at XY_WEIGHT=0 and used the wrong

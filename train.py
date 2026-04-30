@@ -2,18 +2,21 @@
 train.py — train a tiny CNN to find the iPhone Pointer-Control cursor in a
 screen capture.
 
-Architecture: small backbone (~338K params) → three heads:
+Architecture: small backbone (~338K params) → two heads:
   - heatmap:    1×1 conv at 1/8 of train resolution — primary localization signal
-  - regression: outputs (x_norm, y_norm) ∈ [0, 1]² — kept for backward compat
   - confidence: outputs P(cursor present) ∈ [0, 1]
 
-Loss: heatmap BCE (positives only via mask, plus a scaled negatives term) +
-MSE on (x, y) for positives + BCE on confidence for all.
+Loss: heatmap BCE-with-logits split into pos / hard_neg / plain_neg terms
+(weights 1.0 / 1.0 / 0.25) + BCE on confidence.
 
 Input: native captures are 994 × 2160 (NATIVE_W × NATIVE_H). We downsample 2×
 to 497 × 1080 (TRAIN_W × TRAIN_H) — fast inference, still enough detail for the
 cursor sprite (~46 native px ≈ 23 px in train space) to form a sharp peak in
 the 1/8-stride feature map.
+
+Inference decode: hard argmax + parabolic refinement on raw logits, with a
+stride-aware native-pixel mapping. Single canonical implementation lives in
+inference.PointerFinder; train.py:heatmap_to_xy_px mirrors it for val.
 """
 
 from __future__ import annotations
@@ -37,6 +40,17 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(ROOT, "dataset")
 WEIGHTS_PATH = os.path.join(ROOT, "pointer_model.pt")
 VERSION_PATH = os.path.join(ROOT, "VERSION")
+
+
+def _stable_bg_hash(bg_id: str) -> int:
+    """Deterministic non-cryptographic hash for stable train/val bg-level
+    splits across dataset growth. Uses zlib.adler32 (in stdlib, fast,
+    deterministic across Python versions and platforms). Whether a given
+    `bg_id` lands in val is a per-id property — adding new bgs cannot
+    re-shuffle the membership of any existing bg.
+    """
+    import zlib
+    return zlib.adler32(bg_id.encode("utf-8"))
 
 
 def save_checkpoint(ckpt: dict, path: str) -> None:
@@ -115,8 +129,18 @@ class PointerDataset(Dataset):
         if has_bg_id:
             if val_bg_ids is None:
                 bg_ids = sorted({e["bg_id"] for e in all_labels})
-                n_val_bg = max(1, int(round(len(bg_ids) * val_frac)))
-                val_bg_ids = set(random.Random(42).sample(bg_ids, n_val_bg))
+                # Stable hash-based assignment: each bg_id's hash mod 100
+                # decides membership against a percentile threshold derived
+                # from val_frac. Adding or removing a bg in the source dataset
+                # does NOT change which OTHER bgs land in val (membership is
+                # a per-id property, not an index-into-list property).
+                # `random.Random(42).sample(bg_ids, n)` was index-sensitive
+                # and shifted the entire val set on any dataset growth.
+                threshold = int(round(val_frac * 100))
+                val_bg_ids = {b for b in bg_ids if _stable_bg_hash(b) % 100 < threshold}
+                # Keep the legacy "at least one bg in val" guarantee.
+                if not val_bg_ids and bg_ids:
+                    val_bg_ids = {bg_ids[0]}
             entries = [e for e in all_labels if (e["bg_id"] in val_bg_ids) != train]
             self.val_bg_ids = set(val_bg_ids)
             self.split_kind = "bg-level"
@@ -295,17 +319,19 @@ class PointerDataset(Dataset):
 
 class PointerNet(nn.Module):
     """
-    Fully-convolutional cursor finder. Outputs a 1-channel heatmap; argmax gives
-    cursor location. This preserves spatial information (unlike a GAP+regression
-    architecture which collapses 'where' info before the head).
+    Fully-convolutional cursor finder. Outputs a 1-channel heatmap; argmax +
+    parabolic-on-logits + stride-aware decode gives the cursor location at
+    sub-cell precision. This preserves spatial information (unlike a
+    GAP+regression architecture which collapses 'where' info before the head).
 
     Backbone: 3 stride-2 convs + 2 stride-1 convs → 1/8 downsample of TRAIN
-    resolution (497 × 1080 → 63 × 135 feature map). We supervise both with a
-    Gaussian-target heatmap BCE loss AND a soft-argmax MSE on (x_norm, y_norm),
-    weighted-summed; inference uses hard argmax on the heatmap.
+    resolution (497 × 1080 → 63 × 135 feature map). Supervised with Gaussian-
+    target heatmap BCE-with-logits.
 
     Confidence head: predicts log-probability that any cursor is in frame, from
     a global-pooled sibling branch.
+
+    Forward returns (conf_logit, heatmap_logits) — 2-tuple.
     """
     def __init__(self, dropout_p: float = 0.10):
         super().__init__()
@@ -454,8 +480,52 @@ def train_loop(args):
     if device.type == "cuda":
         print(f"  {torch.cuda.get_device_name(0)}")
 
+    # Global RNG seeding. Without this, `torch.initial_seed()` is
+    # non-deterministic, which propagates into augmentation, dataloader
+    # shuffle order, model init, and dropout. With it, training is
+    # bit-exact across runs (as far as floating-point determinism allows;
+    # see --strict-determinism for the cudnn knobs).
+    seed = int(args.seed) if args.seed is not None else 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if getattr(args, "strict_determinism", False):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception:
+            pass
+    print(f"  seed={seed}  strict_determinism={getattr(args, 'strict_determinism', False)}")
+
+    # If resuming, peek at the checkpoint metadata FIRST so we can carry the
+    # previous run's val_bg_ids forward — keeps the val_pos_err metric on
+    # exactly the same held-out set across resume boundaries.
+    persisted_val_bg_ids: set[str] | None = None
+    if args.resume and os.path.exists(args.resume):
+        suffix = os.path.splitext(args.resume)[1].lower()
+        meta = None
+        if suffix == ".safetensors":
+            sidecar = os.path.splitext(args.resume)[0] + ".config.json"
+            if os.path.exists(sidecar):
+                with open(sidecar) as f:
+                    meta = json.load(f)
+        else:
+            try:
+                _peek = torch.load(args.resume, map_location="cpu", weights_only=False)
+                meta = _peek if isinstance(_peek, dict) else None
+                del _peek
+            except Exception:
+                meta = None
+        if isinstance(meta, dict) and meta.get("val_bg_ids"):
+            persisted_val_bg_ids = set(meta["val_bg_ids"])
+            print(f"  resume: inheriting val_bg_ids from checkpoint ({len(persisted_val_bg_ids)} bgs)")
+
     train_ds = PointerDataset(args.dataset, train=True, val_frac=args.val_frac,
-                              augment=args.augment)
+                              augment=args.augment, val_bg_ids=persisted_val_bg_ids)
     val_ds = PointerDataset(args.dataset, train=False, val_frac=args.val_frac,
                             val_bg_ids=train_ds.val_bg_ids, augment=False)
 
@@ -479,8 +549,12 @@ def train_loop(args):
     # Python's `random` or numpy's `np.random`. The augment path uses
     # `random.*`, so without this hook workers fork with identical Python
     # RNG state and produce correlated augmentations across the batch.
+    #
+    # `torch.initial_seed()` already encodes the worker_id (DataLoader sets
+    # `base + worker_id` per worker before our hook runs); using it directly
+    # gives each worker a unique, deterministic seed without double-offsetting.
     def _worker_init_fn(worker_id: int) -> None:
-        seed = (torch.initial_seed() + worker_id) % (2 ** 32)
+        seed = torch.initial_seed() % (2 ** 32)
         random.seed(seed)
         np.random.seed(seed)
 
@@ -718,7 +792,12 @@ def train_loop(args):
                     "val_conf_acc": conf_acc,
                     "native_size": (NATIVE_W, NATIVE_H),
                     "train_size": (TRAIN_W, TRAIN_H),
-                    "version": version}
+                    "version": version,
+                    # Persist val bg membership so resumes measure on the
+                    # SAME held-out set, even if the dataset grows. Without
+                    # this, even the stable-hash split can drift if the
+                    # threshold rounding lands on a boundary case.
+                    "val_bg_ids": sorted(train_ds.val_bg_ids)}
             # Per-best snapshot tagged with version AND val_pos_err. Always saved
             # on a within-pass new-best (even if it doesn't beat the rolling
             # global best) — eyeballing the dir shows the descent at a glance:
@@ -777,6 +856,13 @@ def main() -> int:
                         "fast regression smoke during dev. Shuffles with a fixed seed "
                         "before slicing so the slice is representative of all val "
                         "backgrounds, not just the first.")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Global RNG seed for Python random, numpy, and torch "
+                        "(default 42 if unset). Combined with --strict-determinism "
+                        "for bit-exact repeats across runs.")
+    p.add_argument("--strict-determinism", action="store_true",
+                   help="Pin cudnn.deterministic=True and torch.use_deterministic_"
+                        "algorithms(True). Slower; use for reproducibility audits.")
     p.add_argument("--augment", action="store_true", default=True,
                    help="enable train-time random crop + flip + photometric jitter "
                         "(v0.3.1 default ON — disable with --no-augment for ablation)")

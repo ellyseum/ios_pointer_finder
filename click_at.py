@@ -71,11 +71,24 @@ class PointerFinder:
         self.device = torch.device(
             device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        ckpt = torch.load(weights_path, map_location=self.device, weights_only=False)
+        # Accept both `.pt` (pickle dict with `model` key + metadata) and
+        # `.safetensors` (tensor-only file with optional `<stem>.config.json`
+        # sidecar carrying epoch/val_pos_err/native_size/train_size).
+        suffix = os.path.splitext(weights_path)[1].lower()
         self.model = PointerNet().to(self.device).eval()
-        self.model.load_state_dict(ckpt["model"])
-        self.train_size = ckpt.get("train_size", (TRAIN_W, TRAIN_H))
-        self.native_size = ckpt.get("native_size", (NATIVE_W, NATIVE_H))
+        if suffix == ".safetensors":
+            from safetensors.torch import load_file
+            self.model.load_state_dict(load_file(weights_path))
+            sidecar = os.path.splitext(weights_path)[0] + ".config.json"
+            ckpt = {}
+            if os.path.exists(sidecar):
+                with open(sidecar) as f:
+                    ckpt = json.load(f)
+        else:
+            ckpt = torch.load(weights_path, map_location=self.device, weights_only=False)
+            self.model.load_state_dict(ckpt["model"])
+        self.train_size = tuple(ckpt.get("train_size", (TRAIN_W, TRAIN_H)))
+        self.native_size = tuple(ckpt.get("native_size", (NATIVE_W, NATIVE_H)))
 
     def _preprocess(self, img_bgr: np.ndarray) -> torch.Tensor:
         small = cv2.resize(img_bgr, self.train_size, interpolation=cv2.INTER_AREA)
