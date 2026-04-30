@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import random
@@ -63,44 +64,97 @@ HARD_NEG_TYPES = ["wrong_size_disc", "wrong_alpha_disc", "ring",
 
 
 # ============================================================
-# Cursor sprite — captured from real iOS screen, with hotspot tracking
+# Cursor sprite — sidecar-gated captured asset, procedural fallback
 # ============================================================
+#
+# The procedural smoothstep disc in make_pointer_mask() is the canonical
+# synth target. A captured sprite at SPRITE_PATH may be substituted, but
+# only when accompanied by an approved sidecar manifest declaring its
+# sha256 and an approver. The gate exists because a UI-badge asset was
+# silently used as the cursor sprite for five months without anyone
+# pixel-inspecting the file; loss curves descended cleanly on the wrong
+# target. See CHANGELOG entry for v0.7.0.
 
-# Path to the captured iOS Pointer-Control sprite (alpha-matted PNG).
-# Override with IPF_SPRITE_PATH if shipping a different capture.
 SPRITE_PATH = os.environ.get("IPF_SPRITE_PATH",
                              os.path.join(ROOT, "sprites", "at_dot.png"))
 
-# Cached at module load — (alpha_float, hotspot_xy) at the source resolution.
 _REAL_SPRITE: tuple[np.ndarray, tuple[float, float]] | None = None
 
 
-def _load_real_sprite() -> tuple[np.ndarray, tuple[float, float]] | None:
-    """Load the captured iOS pointer sprite and compute its alpha-mass hotspot.
+def _sprite_sidecar_path(sprite_path: str) -> str:
+    """Sidecar manifest path: <stem>.config.json next to the sprite."""
+    return os.path.splitext(sprite_path)[0] + ".config.json"
 
-    Returns (alpha[H, W] float32 in [0, 1], (hotspot_x, hotspot_y) in source
-    pixel coords). The hotspot is the alpha-weighted centroid — i.e. the click
-    anchor — which on the real iOS pointer differs from the geometric center
-    of the sprite tile by a few pixels. Labeling at the hotspot (not the
-    geometric center) eliminates a systematic supervision bias.
+
+def _load_real_sprite() -> tuple[np.ndarray, tuple[float, float]] | None:
+    """Return (alpha, hotspot_xy) only if a sprite is present AND approved.
+
+    Resolution rules:
+      - sprite absent → None (caller falls back to procedural disc)
+      - sprite present, sidecar absent → fail-hard
+      - sprite present, sidecar present but missing required fields → fail-hard
+      - sprite present, sha256 mismatch → fail-hard
+      - all checks pass → load and cache
     """
     global _REAL_SPRITE
     if _REAL_SPRITE is not None:
         return _REAL_SPRITE
     if not os.path.exists(SPRITE_PATH):
         return None
+
+    sidecar_path = _sprite_sidecar_path(SPRITE_PATH)
+    if not os.path.exists(sidecar_path):
+        raise RuntimeError(
+            f"Sprite present at {SPRITE_PATH} but no approved sidecar at "
+            f"{sidecar_path}.\n"
+            f"Sprite assets must ship with a sidecar manifest of the form:\n"
+            f'  {{ "approved_by": "<name>", "sha256": "<hex>", '
+            f'"approved_at": "<ISO8601>" }}\n'
+            f"Either delete the sprite to use the procedural disc, or "
+            f"visually inspect it (see CONTRIBUTING.md asset-integrity gate) "
+            f"and create the sidecar."
+        )
+
+    with open(sidecar_path) as fh:
+        sidecar = json.load(fh)
+    expected_hash = sidecar.get("sha256")
+    approved_by = sidecar.get("approved_by")
+    if not expected_hash or not approved_by:
+        raise RuntimeError(
+            f"Sprite sidecar at {sidecar_path} missing required fields "
+            f"(sha256, approved_by). Recreate after visual inspection."
+        )
+
+    with open(SPRITE_PATH, "rb") as fh:
+        actual_hash = hashlib.sha256(fh.read()).hexdigest()
+    if actual_hash != expected_hash:
+        raise RuntimeError(
+            f"Sprite sha256 mismatch.\n"
+            f"  declared (sidecar):     {expected_hash}\n"
+            f"  actual ({SPRITE_PATH}): {actual_hash}\n"
+            f"Sprite has changed since approval. Re-inspect visually and "
+            f"regenerate the sidecar before using."
+        )
+
     img = cv2.imread(SPRITE_PATH, cv2.IMREAD_UNCHANGED)
     if img is None or img.ndim != 3 or img.shape[2] != 4:
-        return None
+        raise RuntimeError(
+            f"Sprite at {SPRITE_PATH} is not a valid RGBA PNG."
+        )
     alpha = img[:, :, 3].astype(np.float32) / 255.0
     h, w = alpha.shape
     yy, xx = np.indices((h, w), dtype=np.float32)
     total = float(alpha.sum())
     if total < 1e-6:
-        return None
+        raise RuntimeError(
+            f"Sprite at {SPRITE_PATH} has zero alpha mass — fully transparent "
+            f"or corrupted."
+        )
     hx = float((alpha * xx).sum() / total)
     hy = float((alpha * yy).sum() / total)
     _REAL_SPRITE = (alpha, (hx, hy))
+    print(f"  [sprite] loaded approved sprite {SPRITE_PATH} "
+          f"(approved-by: {approved_by})")
     return _REAL_SPRITE
 
 

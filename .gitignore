@@ -15,10 +15,17 @@ pointer_model_*.config.json
 *.jpg
 *.jpeg
 
-# Whitelist: the captured iOS pointer sprite — runtime dependency of the
-# synthesizer (loaded by synthesize.py:_load_real_sprite). Ships with the
-# repo so users don't need an external download to regenerate the dataset.
+# Whitelist: optional captured cursor sprite. Procedural disc is the
+# canonical synth target; a captured sprite may be substituted only when
+# accompanied by its sidecar manifest (see synthesize.py:_load_real_sprite).
 !sprites/at_dot.png
+!sprites/at_dot.config.json
+
+# Whitelist: test fixtures (deterministic synth backgrounds + golden contact
+# sheet for the visual-validation gate; bundled real-frame regression
+# fixtures). Small, version-controlled assets that the test suite depends on.
+!tests/fixtures/**/*.png
+!tests/golden/**/*.png
 
 # Generated training data — re-derive from backgrounds_kept/ via synthesize.py
 dataset/
