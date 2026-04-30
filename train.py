@@ -99,6 +99,25 @@ TRAIN_W, TRAIN_H = 497, 1080  # 2x downsample (was 4x — cursor was sub-pixel
                               # 2x_input × 8x_backbone = 1/16, cursor 46/16 =
                               # ~3 px in feature map, learnable)
 
+# Stride convention. Distinguishes the structural train-resolution stride
+# (3 stride-2 conv blocks → 8x downsample, plus 2x train→native upsample =
+# 16x effective) from the per-axis native-resolution stride used by the
+# decoder (NATIVE / HM_DIM, asymmetric: 994/63=15.778 across X but
+# 2160/135=16.0 across Y). The decoder uses the per-axis native stride
+# because that's what `cell i → native pixel i*s + (s-1)/2` requires.
+STRIDE_TRAIN = 16
+
+# Architecture version pin. Bumped when the model's shape, head count,
+# or decoded coordinate convention changes incompatibly. Stored in every
+# checkpoint sidecar; loaders assert match before using weights.
+#
+#   v1 (implicit, pre-v0.7): 2-tuple forward (conf_logit, heatmap),
+#       AdaptiveAvgPool conf head, BCE-mean heatmap loss.
+#   v2 (v0.7+): same forward signature; added stride/version metadata
+#       to the saved sidecar. Future v0.7 commits (#103 BCE-sum, #104
+#       conf-head MaxPool) layer on top of this version pin.
+ARCHITECTURE_VERSION = 2
+
 
 # Sample type encoding for metric slicing. Negative type id = unknown/legacy
 # (datasets generated before sample_type field was added).
@@ -812,6 +831,8 @@ def train_loop(args):
                     "native_size": (NATIVE_W, NATIVE_H),
                     "train_size": (TRAIN_W, TRAIN_H),
                     "version": version,
+                    "architecture_version": ARCHITECTURE_VERSION,
+                    "stride_train": STRIDE_TRAIN,
                     # Persist val bg membership so resumes measure on the
                     # SAME held-out set, even if the dataset grows. Without
                     # this, even the stable-hash split can drift if the

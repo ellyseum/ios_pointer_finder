@@ -33,7 +33,14 @@ import torch
 
 # PointerNet definition lives in train.py for now — re-export here as part of
 # the public surface so users don't need to import from train internals.
-from train import NATIVE_H, NATIVE_W, TRAIN_H, TRAIN_W, PointerNet
+from train import (
+    ARCHITECTURE_VERSION,
+    NATIVE_H,
+    NATIVE_W,
+    TRAIN_H,
+    TRAIN_W,
+    PointerNet,
+)
 from decode import argmax_parabolic_native, parabolic_offset
 
 PathLike = str | os.PathLike | Path
@@ -100,6 +107,36 @@ class PointerFinder:
         self.config = config or self._load_sidecar_config(self.weights_path)
         self.native_size = tuple(self.config.get("native_size", (NATIVE_W, NATIVE_H)))
         self.train_size = tuple(self.config.get("train_size", (TRAIN_W, TRAIN_H)))
+        self._check_architecture_version(self.config)
+
+    @staticmethod
+    def _check_architecture_version(config: dict) -> None:
+        """Assert the checkpoint's architecture version matches this code.
+
+        v0.7+ checkpoints stamp ``architecture_version`` in their sidecar.
+        Older checkpoints predate the field; load them with a warning so
+        legacy weights still work but the user knows they're outside the
+        version contract.
+        """
+        ckpt_v = config.get("architecture_version")
+        if ckpt_v is None:
+            import warnings
+            warnings.warn(
+                "Checkpoint has no architecture_version field — likely a "
+                "pre-v0.7 weight file. Loading anyway, but predictions may "
+                "differ if the checkpoint was trained against a different "
+                "model shape than the current PointerNet.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+        if ckpt_v != ARCHITECTURE_VERSION:
+            raise RuntimeError(
+                f"Checkpoint architecture_version={ckpt_v} but this code "
+                f"expects {ARCHITECTURE_VERSION}. The model shape, head "
+                f"count, or coordinate convention has changed incompatibly. "
+                f"Either re-train, or check out the matching code revision."
+            )
 
     @classmethod
     def from_pretrained(
