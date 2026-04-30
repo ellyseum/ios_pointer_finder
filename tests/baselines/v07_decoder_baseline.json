@@ -1,0 +1,113 @@
+{
+  "_doc": "Baseline real-frame predictions through v0.7 canonical decode (decode.argmax_parabolic_native). Snapshot before v0.7-5 border fix / v0.7-7b loss reshape / v0.7-8 conf-head MaxPool. Hand-annotated GT for bg-00000 only.",
+  "ckpts": {
+    "v0.4.0_22.9px": {
+      "per_frame": {
+        "bg-00000.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9998,
+          "heatmap_peak": 1.0,
+          "err_vs_hand_gt_px": 7.3
+        },
+        "bg-00001.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9998,
+          "heatmap_peak": 1.0
+        },
+        "bg-00002.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9998,
+          "heatmap_peak": 1.0
+        },
+        "bg-00005.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9999,
+          "heatmap_peak": 1.0
+        },
+        "bg-00006.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9998,
+          "heatmap_peak": 1.0
+        },
+        "bg-00007.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9979,
+          "heatmap_peak": 0.9998
+        },
+        "bg-00008.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9994,
+          "heatmap_peak": 1.0
+        },
+        "bg-00009.png": {
+          "x": 654,
+          "y": 1431,
+          "confidence": 0.9972,
+          "heatmap_peak": 1.0
+        }
+      },
+      "bg_00000_err_px": 7.3
+    },
+    "v0.6.2_BROKEN": {
+      "per_frame": {
+        "bg-00000.png": {
+          "x": 445,
+          "y": 319,
+          "confidence": 0.0012,
+          "heatmap_peak": 0.0104,
+          "err_vs_hand_gt_px": 1125.0
+        },
+        "bg-00001.png": {
+          "x": 479,
+          "y": 94,
+          "confidence": 0.0001,
+          "heatmap_peak": 0.0109
+        },
+        "bg-00002.png": {
+          "x": 641,
+          "y": 39,
+          "confidence": 0.0191,
+          "heatmap_peak": 0.0092
+        },
+        "bg-00005.png": {
+          "x": 473,
+          "y": 261,
+          "confidence": 0.001,
+          "heatmap_peak": 0.0185
+        },
+        "bg-00006.png": {
+          "x": 649,
+          "y": 1423,
+          "confidence": 0.9802,
+          "heatmap_peak": 0.1045
+        },
+        "bg-00007.png": {
+          "x": 779,
+          "y": 1288,
+          "confidence": 0.9857,
+          "heatmap_peak": 0.0604
+        },
+        "bg-00008.png": {
+          "x": 336,
+          "y": 1439,
+          "confidence": 0.921,
+          "heatmap_peak": 0.0535
+        },
+        "bg-00009.png": {
+          "x": 822,
+          "y": 976,
+          "confidence": 0.4198,
+          "heatmap_peak": 0.0819
+        }
+      },
+      "bg_00000_err_px": 1125.0
+    }
+  }
+}
