@@ -19,8 +19,8 @@ API:
 
 Result: {
     "ok": bool,
-    "reason": "converged" | "stale_pipeline" | "max_iters" | "cursor_lost"
-              | "hands_dead" | "bad_frame",
+    "reason": "converged" | "stale_pipeline" | "pipeline_dead" | "max_iters"
+              | "cursor_lost" | "static_lock" | "hands_dead" | "bad_frame",
     "iters": int,
     "final_xy": (cx, cy) | None,
     "final_err": float | None,
@@ -270,6 +270,12 @@ def click_at(target_x: int, target_y: int,
     prev_cmd_dx: int | None = None
     prev_cmd_dy: int | None = None
     static_lock_streak = 0
+    # Init the loop-body locals so the max_iters fallthrough has a
+    # well-defined "no detection happened" state without relying on the
+    # `'cx' in dir()` introspection idiom.
+    cx: int | None = None
+    cy: int | None = None
+    dist: float | None = None
 
     # Static-feature lock detection: when the model is locked onto a UI
     # distractor (cursor auto-hidden, etc.), the heatmap peak is identical
@@ -379,8 +385,8 @@ def click_at(target_x: int, target_y: int,
             if verbose: print(f"  move err: {e}")
 
     return {"ok": False, "reason": "max_iters", "iters": max_iters,
-            "final_xy": (cx, cy) if 'cx' in dir() else None,
-            "final_err": dist if 'dist' in dir() else None,
+            "final_xy": (cx, cy) if cx is not None else None,
+            "final_err": dist if dist is not None else None,
             "gain": (round(gain_x, 3), round(gain_y, 3)),
             "history": history}
 
