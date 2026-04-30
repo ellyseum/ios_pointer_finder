@@ -6,7 +6,7 @@ A 338K-parameter CNN that finds the iPhone Pointer-Control cursor in a screen ca
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Weights: CC-BY-4.0](https://img.shields.io/badge/Weights-CC--BY--4.0-lightgrey.svg)](LICENSE-WEIGHTS)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Model: v0.6.0](https://img.shields.io/badge/model-v0.6.0-green.svg)](https://github.com/ellyseum/ios_pointer_finder/releases/tag/v0.6.0)
+[![Model: v0.7.0](https://img.shields.io/badge/model-v0.7.0-green.svg)](https://github.com/ellyseum/ios_pointer_finder/releases/tag/v0.7.0)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 When you pair a Bluetooth mouse with an iPhone, iOS draws a small "@-symbol" cursor on the
@@ -24,7 +24,7 @@ that drives an unmodified phone over BLE HID + AirPlay mirroring.
 ## Quickstart
 
 > **Status:** PyPI publish + Hugging Face Hub model repo are not live yet —
-> both are gated on the v0.6 retrain finishing (see [Roadmap](#roadmap-milestones)).
+> both are gated on the v0.7 retrain finishing (see [Roadmap](#roadmap-milestones)).
 > Today's install path is from a clone:
 
 ```bash
@@ -40,13 +40,13 @@ Then either:
 `.safetensors`:
 
 ```bash
-python scripts/convert_pt_to_safetensors.py pointer_model_v0.6.0_18.0px.pt
-# → pointer_model_v0.6.0_18.0px.safetensors  +  pointer_model_v0.6.0_18.0px.config.json
+python scripts/convert_pt_to_safetensors.py pointer_model_v0.7.0.pt
+# → pointer_model_v0.7.0.safetensors  +  pointer_model_v0.7.0.config.json
 ```
 
 `train.py` can also write `.safetensors` directly via `--weights-out *.safetensors`.
 
-**B) Once the HF repo is up** (gated on the v0.6 retrain), use the one-liner the
+**B) Once the HF repo is up** (gated on the v0.7 retrain), use the one-liner the
 package is designed for:
 
 ```python
@@ -64,7 +64,7 @@ For now (path A), call `PointerFinder` with a local `.safetensors` or `.pt` path
 
 ```python
 from inference import PointerFinder
-finder = PointerFinder.from_pretrained("./pointer_model_v0.6.0_18.0px.safetensors")
+finder = PointerFinder.from_pretrained("./pointer_model_v0.7.0.safetensors")
 ```
 
 See [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) for the full inference contract and provenance.
@@ -84,7 +84,7 @@ cursor finder answers "where's the cursor" continuously.
 
 ---
 
-## Model card (v0.6.0)
+## Model card (v0.7.0)
 
 | Field                | Value                                                |
 |----------------------|------------------------------------------------------|
@@ -96,7 +96,7 @@ cursor finder answers "where's the cursor" continuously.
 | Heatmap stride       | 1/8 of train resolution (≈ 1/16 of native after the 2× input downsample) |
 | Inference latency    | 10 ms (RTX 5080) / ~30 ms (M-series CoreML)          |
 | Throughput           | 95 fps (single-image batch, fp32, RTX 5080)          |
-| Val pos error        | TBD — v0.6.0 cold-start retrain pending. v0.5 reached 18.9 px on bg-level honest split before the v0.6 fixes landed. |
+| Val pos error        | TBD — v0.7.0 cold-start retrain pending. v0.5 reached 18.9 px on bg-level honest split before the v0.6 fixes landed. |
 | FPR (cursor-free)    | <2% at conf ≥ 0.5 on held-out backgrounds            |
 | Weights license      | CC-BY-4.0                                            |
 
@@ -120,14 +120,14 @@ iPhone screen capture (994×2160 BGR)
 
 Trained on synthetic composites:
 - **backgrounds** — real iPhone screen captures (cursor-free) — bring your own
-- **cursor** — real captured iOS Pointer-Control sprite (`sprites/at_dot.png`,
-  alpha-matted from a single high-resolution capture), resized to ~46 native px
-  and composited at random positions. Labels use the **alpha-mass centroid**
-  (the click anchor) rather than the geometric tile center — the iOS pointer
-  is left-right asymmetric and biased upward in its tile.
-  The synthetic mix includes hard negatives (decoy shapes designed to look
-  cursor-like at a distance) and edge-clipped positives (cursor partially
-  off-screen).
+- **cursor** — procedural smoothstep disc (peak alpha ≈ 0.25, luminance-matched
+  to the local background), resized to ~46 native px and composited at random
+  positions. v0.7 ships on this canonical synth target. A captured sprite at
+  `sprites/at_dot.png` may be substituted, but only when accompanied by an
+  approved sidecar manifest (sha256 + approver) — the loader fails hard
+  otherwise. The synthetic mix includes hard negatives (decoy shapes designed
+  to look cursor-like at a distance) and edge-clipped positives (cursor
+  partially off-screen).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data + loss + training
 schedule writeup.
@@ -142,25 +142,27 @@ schedule writeup.
 | v0.3.4  | 30.5 px     | 1.7%            | 49/50                | 10                       |
 | v0.4.0  | 22.9 px     | <2%             | —                    | 10                       |
 | v0.5.0  | 18.9 px     | <2%             | —                    | 10                       |
-| **v0.6.0** | **TBD** | **TBD**         | **—**                | **10**                   |
+| **v0.7.0** | **TBD** | **TBD**         | **—**                | **10**                   |
 
 All versions train on synthetic data (real backgrounds + composited cursor
 sprite) with a bg-level honest val split — apples-to-apples comparable from
 v0.3.x onward. v0.4.0 added correctness fixes (float labels through
-augmentation, parabolic subpixel refinement at inference). v0.5.0 swapped
-the cursor sprite source from a procedural smoothstep disc to an alpha-
-matted PNG of the real iOS Pointer-Control cursor (still synthetic
-compositing), fixed the coordinate mapping to match the FCN's actual stride,
-and moved subpixel refinement to raw heatmap logits. v0.6.0 simplifies the
-forward signature (drops the unused soft-argmax head), tightens augmentation
-(asymmetric crop matching the real-sprite hotspot, H-flip disabled on
-positives), and unifies the decoder across all aux scripts. v0.6.0 number
-lands here once retrain completes.
+augmentation, parabolic subpixel refinement at inference). v0.5.0/v0.6.x
+shipped on a sprite asset that turned out to be a UI badge, not the cursor —
+v0.7 reverts to the v0.4 procedural smoothstep disc as the canonical synth
+target, adds a visual-validation gate that catches the failure pattern, and
+re-enables the previously-silent real-frame regression eval. v0.7 also
+unifies the decoder across all aux scripts (single canonical `decode.py`),
+switches the heatmap BCE reduction from mean to sum with a calibrated
+HM_WEIGHT (the prior mean form diluted the localization gradient ~1400×
+relative to the confidence head), and swaps confidence-head pooling from
+average to max (the avg-pool washed out the cursor signal at the head).
+v0.7.0 number lands here once retrain completes.
 
 Run the eval harness yourself:
 
 ```bash
-python eval_v03.py --v02 pointer_model_v0.2.0.pt --v03 pointer_model_v0.6.0.safetensors
+python eval_v03.py --v02 pointer_model_v0.2.0.pt --v07 pointer_model_v0.7.0.safetensors
 ```
 
 ---

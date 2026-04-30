@@ -42,6 +42,35 @@ pytest -q
 5. Open a PR against `main`. Describe what changed and why; link any related issues.
 6. CI runs ruff + pytest on every push. Green CI is required before merge.
 
+## Asset-integrity gate
+
+Any change that touches `sprites/` or `synthesize.py` carries the same
+risk class as v0.6.x's silent wrong-target training: the loss curve
+will descend on whatever target you give it, even if that target is
+incorrect. Before merging:
+
+1. Run `pytest tests/test_synth_visual.py`. The gate asserts SSIM ≥ 0.95
+   per cell against the committed golden contact sheet plus circularity
+   ≥ 0.85 on the procedural sprite footprint. Both checks fail loudly
+   if the synth output drifts in ways that pixel-blind tests miss.
+2. **Visually inspect the contact sheet yourself.** Render
+   `tests/golden/synth_contact_sheet.png` (or regenerate via the helper
+   if your change legitimately moves it) and confirm each cell shows a
+   translucent disc-shaped cursor — not a UI badge, not a checkmark,
+   not a square with rounded corners.
+3. If your change adds a captured sprite at `sprites/at_dot.png`, the
+   loader requires an approved sidecar manifest at
+   `sprites/at_dot.config.json` containing `sha256`, `approved_by`, and
+   `approved_at`. Generate the sidecar AFTER step 2; the synthesizer
+   will fail hard otherwise.
+
+This gate exists because between v0.5.1 and v0.6.2, the repo shipped a
+synth target that was not the iOS Pointer-Control cursor. The mistake
+survived ten code reviews and five months of training because reviewers
+read code, not pixels. The visual gate and the sidecar requirement are
+structural fixes meant to keep the same class of mistake from happening
+again. See the v0.7.0 entry in `CHANGELOG.md` for the full post-mortem.
+
 ## Releasing a new model version
 
 1. Train and validate. The checkpoint should land at `pointer_model_v{X}.{Y}.{Z}_{val_err}px.pt`.

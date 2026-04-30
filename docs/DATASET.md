@@ -1,11 +1,15 @@
 # Dataset Guide
 
 `ios_pointer_finder` trains on **synthetic data**: real iPhone backgrounds
-+ a real captured iOS Pointer-Control sprite alpha-composited at random
-positions. The sprite ships with the repo at `sprites/at_dot.png`
-(36×36 BGRA, alpha-matted from a single high-resolution capture). The
-published checkpoints' backgrounds were the trainer's own iPhone screens
-and are not redistributed.
++ a procedural cursor sprite alpha-composited at random positions. The
+sprite is a smoothstep disc with peak alpha ≈ 0.25 calibrated against
+real iOS Pointer-Control captures, generated at synthesis time by
+`synthesize.make_pointer_sprite()`. v0.7 ships on this canonical target.
+A captured sprite at `sprites/at_dot.png` may be substituted, but only
+when accompanied by an approved sidecar manifest — the loader fails hard
+on an unverified asset (see [`CONTRIBUTING.md`](../CONTRIBUTING.md#asset-integrity-gate)
+for the review flow). The published checkpoints' backgrounds were the
+trainer's own iPhone screens and are not redistributed.
 
 This guide tells you how to collect your own backgrounds and synthesize a
 training set locally.

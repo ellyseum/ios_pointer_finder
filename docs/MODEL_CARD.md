@@ -1,4 +1,4 @@
-# Model Card — ios_pointer_finder v0.6.0
+# Model Card — ios_pointer_finder v0.7.0
 
 A 338K-parameter convolutional network that predicts the on-screen position of
 the iPhone Pointer-Control cursor from a single screen-capture image.
@@ -98,14 +98,15 @@ heatmap logits) to recover `(x, y)`.
 | `hard_neg`    | 15%         | "Decoy cursor" composites: wrong-size discs, hollow rings, ellipses, doubled dots, I-beam strokes, white wedges. `has_cursor=0`. |
 | `plain_neg`   | 15%         | Unmodified background. `has_cursor=0`. |
 
-The cursor sprite ships in the repo as `sprites/at_dot.png` — a real
-36×36 alpha-matted capture of the iOS Pointer-Control cursor. v0.5+
-loads it via `synthesize.py:make_pointer_sprite()` and uses the **alpha-
-mass centroid** (not the geometric tile center) as the click anchor for
-labels, since the iOS pointer's alpha is biased toward the upper-left of
-its tile. Earlier versions (v0.4 and below) used a programmatically-
-generated soft-disc approximation; that mismatch was a measurable chunk
-of the v0.4 sim-to-real gap.
+The cursor sprite is a **procedural smoothstep disc** (peak alpha 0.25,
+luminance-matched to the local background patch via
+`synthesize.pick_cursor_color`). v0.7 ships on this canonical synth
+target — the same target used in v0.3 and v0.4. A captured iOS pointer
+sprite may be substituted via `sprites/at_dot.png`, but only when paired
+with an approved sidecar manifest (`<stem>.config.json` with sha256,
+approved_by, approved_at); the loader fails hard otherwise. See
+[`CONTRIBUTING.md`](../CONTRIBUTING.md#asset-integrity-gate) for the
+review flow.
 
 Backgrounds for our published checkpoints were ~120 cursor-free real
 iPhone screen captures from the trainer's own device, not redistributed.
