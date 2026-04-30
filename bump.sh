@@ -24,7 +24,7 @@ cd "$(dirname "$0")"
 LEVEL="${1:-patch}"
 COMMIT="${2:-}"
 
-CURRENT=$(tr -d '\n' < VERSION)
+CURRENT=$(tr -d '\n\r' < VERSION)
 IFS=. read -r MAJ MIN PAT <<< "$CURRENT"
 
 case "$LEVEL" in
