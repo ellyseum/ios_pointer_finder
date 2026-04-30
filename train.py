@@ -799,7 +799,22 @@ def train_loop(args):
 
         dt = time.monotonic() - t0
         all_err_sum = sum(slice_err_sum.values()); all_err_n = sum(slice_err_n.values())
-        mean_pos_err = all_err_sum / max(1, all_err_n)
+        # Legacy combined error (normal_pos + edge_pos averaged together).
+        # Logged for v0.6.x baseline comparability but no longer drives
+        # checkpoint selection — edge_pos labels are noisier (visible-centroid
+        # of clipped sprite) and were systematically inflating pass-best.
+        legacy_combined_pos_err = all_err_sum / max(1, all_err_n)
+        # v0.7 #108: best-on-normal_pos. The metric the rest of the pipeline
+        # cares about (real-frame eval, deployment click accuracy) is the
+        # full-cursor case; edge_pos is a slice-level diagnostic.
+        normal_pos_n = slice_err_n.get(SAMPLE_TYPES["normal_pos"], 0)
+        normal_pos_sum = slice_err_sum.get(SAMPLE_TYPES["normal_pos"], 0.0)
+        if normal_pos_n > 0:
+            mean_pos_err = normal_pos_sum / normal_pos_n
+        else:
+            # No normal_pos samples in val (e.g., legacy dataset) — fall back
+            # to combined so the metric is at least defined.
+            mean_pos_err = legacy_combined_pos_err
         conf_acc = val_conf_correct / max(1, n_val)
         slice_lines = []
         for t_id, name in SAMPLE_TYPES_INV.items():
@@ -817,7 +832,8 @@ def train_loop(args):
               f"train_hm_plain={train_hm_plain_neg_loss/max(1,n_train_plain_neg):.4f} "
               f"train_hm_hard={train_hm_hard_neg_loss/max(1,n_train_hard_neg):.4f} "
               f"train_conf={train_conf_loss/n_train:.4f}  "
-              f"val_pos_err={mean_pos_err:.1f}px(hm+parab) val_conf_acc={conf_acc*100:.1f}%  "
+              f"val_pos_err={mean_pos_err:.1f}px(normal_pos) "
+              f"val_combined={legacy_combined_pos_err:.1f}px val_conf_acc={conf_acc*100:.1f}%  "
               f"lr={opt.param_groups[0]['lr']:.5f}  ({dt:.1f}s)")
         if slice_lines:
             print(f"        {slice_str}")
@@ -827,12 +843,14 @@ def train_loop(args):
             ckpt = {"model": model.state_dict(),
                     "epoch": epoch,
                     "val_pos_err_px": mean_pos_err,
+                    "val_combined_pos_err_px": legacy_combined_pos_err,
                     "val_conf_acc": conf_acc,
                     "native_size": (NATIVE_W, NATIVE_H),
                     "train_size": (TRAIN_W, TRAIN_H),
                     "version": version,
                     "architecture_version": ARCHITECTURE_VERSION,
                     "stride_train": STRIDE_TRAIN,
+                    "metric_definition": "normal_pos_only",
                     # Persist val bg membership so resumes measure on the
                     # SAME held-out set, even if the dataset grows. Without
                     # this, even the stable-hash split can drift if the
