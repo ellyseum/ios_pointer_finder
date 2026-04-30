@@ -74,6 +74,7 @@ class PointerPrediction:
         yield self.y
         yield self.confidence
         yield self.heatmap_peak
+        yield self.native_size
 
 
 class PointerFinder:
