@@ -86,25 +86,14 @@ def find(model: PointerNet, img: np.ndarray, device: torch.device) -> dict:
     """v0.5.1: delegates to inference.PointerFinder's decode path so this
     eval matches deployed inference exactly. Falls back to local decode
     only if PointerFinder isn't constructible (no weights file)."""
-    from inference import _parabolic_offset
+    from decode import argmax_parabolic_native
     x = preprocess(img, device)
     with torch.no_grad():
         conf_logit, hm = model(x)  # v0.5.1: forward returns 2-tuple
     conf = float(torch.sigmoid(conf_logit).item())
     logits = hm[0, 0].cpu().numpy()
     prob = 1.0 / (1.0 + np.exp(-logits))
-    H_, W_ = logits.shape
-    flat = int(logits.argmax())
-    iy, ix = flat // W_, flat % W_
-    # v0.5 stride convention + parabolic on logits — matches inference.py.
-    rx = float(ix) + _parabolic_offset(logits, ix, iy, axis="x")
-    ry = float(iy) + _parabolic_offset(logits, ix, iy, axis="y")
-    stride_x = NATIVE_W / W_
-    stride_y = NATIVE_H / H_
-    cx = int(round(rx * stride_x + (stride_x - 1.0) / 2.0))
-    cy = int(round(ry * stride_y + (stride_y - 1.0) / 2.0))
-    cx = max(0, min(NATIVE_W - 1, cx))
-    cy = max(0, min(NATIVE_H - 1, cy))
+    cx, cy, _ = argmax_parabolic_native(logits, NATIVE_W, NATIVE_H)
     return {"cx": cx, "cy": cy, "conf": conf,
             "peak": float(prob.max()), "mean_hm": float(prob.mean())}
 

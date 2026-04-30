@@ -65,89 +65,38 @@ PIPELINE_STALE_S = 3.0        # newest frame older than this → pipeline dead
 
 
 # ---------- inference ----------
+#
+# v0.7: PointerFinder is a thin adapter over inference.PointerFinder. The
+# previous local class duplicated the decode pipeline (argmax + parabolic +
+# stride-aware native mapping); two copies inevitably drift. The adapter
+# preserves find()'s tuple return signature so existing callers keep
+# working unchanged. Decode logic now lives in decode.argmax_parabolic_native.
+
+from inference import PointerFinder as _InferencePointerFinder
+
 
 class PointerFinder:
-    def __init__(self, weights_path: str = WEIGHTS_PATH, device: str | None = None):
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        # Accept both `.pt` (pickle dict with `model` key + metadata) and
-        # `.safetensors` (tensor-only file with optional `<stem>.config.json`
-        # sidecar carrying epoch/val_pos_err/native_size/train_size).
-        suffix = os.path.splitext(weights_path)[1].lower()
-        self.model = PointerNet().to(self.device).eval()
-        if suffix == ".safetensors":
-            from safetensors.torch import load_file
-            self.model.load_state_dict(load_file(weights_path))
-            sidecar = os.path.splitext(weights_path)[0] + ".config.json"
-            ckpt = {}
-            if os.path.exists(sidecar):
-                with open(sidecar) as f:
-                    ckpt = json.load(f)
-        else:
-            ckpt = torch.load(weights_path, map_location=self.device, weights_only=False)
-            self.model.load_state_dict(ckpt["model"])
-        self.train_size = tuple(ckpt.get("train_size", (TRAIN_W, TRAIN_H)))
-        self.native_size = tuple(ckpt.get("native_size", (NATIVE_W, NATIVE_H)))
+    """Closed-loop deployment adapter over inference.PointerFinder.
 
-    def _preprocess(self, img_bgr: np.ndarray) -> torch.Tensor:
-        small = cv2.resize(img_bgr, self.train_size, interpolation=cv2.INTER_AREA)
-        x = torch.from_numpy(small.astype(np.float32) / 255.0).permute(2, 0, 1)
-        x = (x - 0.5) / 0.25
-        return x.unsqueeze(0).to(self.device)
+    Preserves the (cx, cy, conf, peak) tuple return shape that the servo
+    loop and `find()` callers depend on; deprecates the local decoder
+    fork that drifted from inference.py during v0.5/v0.6.
+    """
+
+    def __init__(self, weights_path: str = WEIGHTS_PATH, device: str | None = None):
+        self._finder = _InferencePointerFinder(weights_path, device=device)
+        self.native_size = self._finder.native_size
+        self.train_size = self._finder.train_size
 
     def find(self, img_bgr: np.ndarray) -> tuple[int, int, float, float] | None:
-        """
-        Returns (cx, cy, conf, peak_prob) in native-px coords.
-        cx, cy refined with parabolic sub-pixel interpolation around argmax.
-        Returns None if image shape is wrong.
+        """Returns (cx, cy, conf, peak_prob) in native-px coords, or None
+        if the image shape doesn't match the model's expected native size.
         """
         nh, nw = self.native_size[1], self.native_size[0]
         if img_bgr.shape[:2] != (nh, nw):
             return None
-        x = self._preprocess(img_bgr)
-        with torch.no_grad():
-            conf_logit, hm = self.model(x)  # v0.5.1: 2-tuple
-        conf = float(torch.sigmoid(conf_logit).item())
-        # v0.5.1: parabolic on raw logits (not sigmoid; sigmoid saturates near
-        # peak and collapses the second derivative); stride-aware native decode.
-        logits = hm[0, 0].cpu().numpy()
-        H, W = logits.shape
-        flat_idx = int(logits.argmax())
-        iy, ix = flat_idx // W, flat_idx % W
-        sub_x, sub_y = _parabolic_subpixel(logits, ix, iy)
-        # Clamp to [-0.5, 0.5] so an anomalous logit profile can't push the
-        # offset beyond half-cell (the parabola vertex is by definition the
-        # local extremum within a cell).
-        sub_x = max(-0.5, min(0.5, sub_x))
-        sub_y = max(-0.5, min(0.5, sub_y))
-        rx = ix + sub_x
-        ry = iy + sub_y
-        stride_x = nw / W
-        stride_y = nh / H
-        cx = int(round(rx * stride_x + (stride_x - 1.0) / 2.0))
-        cy = int(round(ry * stride_y + (stride_y - 1.0) / 2.0))
-        cx = max(0, min(nw - 1, cx))
-        cy = max(0, min(nh - 1, cy))
-        peak = float(1.0 / (1.0 + np.exp(-logits[iy, ix])))
-        return cx, cy, conf, peak
-
-
-def _parabolic_subpixel(hm: np.ndarray, ix: int, iy: int) -> tuple[float, float]:
-    """3-tap parabolic fit on the row and column through argmax. Returns
-    (Δx, Δy) offsets in [-0.5, 0.5] heatmap-pixel units. Reduces argmax
-    quantization error from ±8 native-px to ~±1 native-px."""
-    H, W = hm.shape
-
-    def fit_1d(a: float, b: float, c: float) -> float:
-        denom = a - 2.0 * b + c
-        if abs(denom) < 1e-9:
-            return 0.0
-        return 0.5 * (a - c) / denom
-
-    sub_x = fit_1d(hm[iy, ix - 1], hm[iy, ix], hm[iy, ix + 1]) if 0 < ix < W - 1 else 0.0
-    sub_y = fit_1d(hm[iy - 1, ix], hm[iy, ix], hm[iy + 1, ix]) if 0 < iy < H - 1 else 0.0
-    return float(sub_x), float(sub_y)
+        pred = self._finder.predict(img_bgr)
+        return pred.x, pred.y, pred.confidence, pred.heatmap_peak
 
 
 # ---------- frame source ----------

@@ -34,44 +34,12 @@ import torch
 # PointerNet definition lives in train.py for now — re-export here as part of
 # the public surface so users don't need to import from train internals.
 from train import NATIVE_H, NATIVE_W, TRAIN_H, TRAIN_W, PointerNet
+from decode import argmax_parabolic_native, parabolic_offset
 
 PathLike = str | os.PathLike | Path
 
-
-def _parabolic_offset(hm: np.ndarray, ix: int, iy: int, axis: str) -> float:
-    """Sub-cell offset of the parabola fit through the argmax cell + 2 neighbors.
-
-    For axis 'x', uses hm[iy, ix-1], hm[iy, ix], hm[iy, ix+1].
-    For axis 'y', uses hm[iy-1, ix], hm[iy, ix], hm[iy+1, ix].
-
-    Returns 0.0 when the argmax is on the heatmap border (no valid neighbor)
-    or when the parabola is degenerate (denominator near zero — flat heatmap).
-    Returns a clamped offset in [-0.5, 0.5] (the parabola vertex can't be
-    further from the integer cell than half a cell width if the cell really
-    is the argmax).
-    """
-    H, W = hm.shape
-    if axis == "x":
-        if ix <= 0 or ix >= W - 1:
-            return 0.0
-        a = float(hm[iy, ix - 1])
-        b = float(hm[iy, ix])
-        c = float(hm[iy, ix + 1])
-    else:
-        if iy <= 0 or iy >= H - 1:
-            return 0.0
-        a = float(hm[iy - 1, ix])
-        b = float(hm[iy, ix])
-        c = float(hm[iy + 1, ix])
-    denom = a - 2.0 * b + c
-    if abs(denom) < 1e-9:
-        return 0.0
-    off = 0.5 * (a - c) / denom
-    if off > 0.5:
-        off = 0.5
-    elif off < -0.5:
-        off = -0.5
-    return off
+# Backwards-compatible alias for callers that imported the private name.
+_parabolic_offset = parabolic_offset
 
 
 @dataclass
@@ -227,29 +195,9 @@ class PointerFinder:
             conf_logit, hm = self.model(x)  # v0.5.1: forward returns 2-tuple
 
         conf = float(torch.sigmoid(conf_logit).item())
-        # v0.5: parabolic subpixel fit is applied to RAW LOGITS, not sigmoid
-        # output. The training target is exp(-d²/2σ²); logit(target) is
-        # parabolic in `d` near the peak, while the sigmoid saturates and
-        # collapses the second derivative. Fitting on logits restores subpixel
-        # precision lost to saturation bias.
         logits = hm[0, 0].cpu().numpy()
+        cx, cy, _peak_logit = argmax_parabolic_native(logits, nw, nh)
         prob = 1.0 / (1.0 + np.exp(-logits))  # sigmoid for heatmap_peak
-        H, W = logits.shape
-        flat = int(logits.argmax())
-        iy, ix = flat // W, flat % W
-        # Parabolic subpixel refinement on logits.
-        rx = float(ix) + _parabolic_offset(logits, ix, iy, axis="x")
-        ry = float(iy) + _parabolic_offset(logits, ix, iy, axis="y")
-        # v0.5: stride-aware cell→native mapping (replaces v0.4 linear stretch
-        # `rx/(W-1)*nw` which forced the model to learn a non-uniform spatial
-        # warp). Cell `i` has receptive-field center at native pixel
-        # `i*stride + (stride-1)/2` where stride = native_dim / hm_dim.
-        stride_x = nw / W
-        stride_y = nh / H
-        rx_native = rx * stride_x + (stride_x - 1.0) / 2.0
-        ry_native = ry * stride_y + (stride_y - 1.0) / 2.0
-        cx = min(nw - 1, max(0, int(round(rx_native))))
-        cy = min(nh - 1, max(0, int(round(ry_native))))
         return PointerPrediction(
             x=cx,
             y=cy,

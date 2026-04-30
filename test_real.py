@@ -55,7 +55,7 @@ def hard_argmax_xy(hm_logits: torch.Tensor) -> tuple[float, float, float]:
     NORMALIZED native coords (still in [0, 1]) — caller multiplies by
     NATIVE_W/H. v0.5.1: matches inference.py decode exactly.
     """
-    from inference import _parabolic_offset
+    from decode import parabolic_offset as _parabolic_offset
     logits = hm_logits[0, 0].cpu().numpy()
     H, W = logits.shape
     flat = int(logits.argmax())

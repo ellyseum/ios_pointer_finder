@@ -58,22 +58,14 @@ def heatmap_to_bbox(hm_logits: torch.Tensor, native_w: int, native_h: int,
     sigmoid mask (a different problem from "where is the peak"); only the
     `center` is now decoded canonically rather than from the upsampled grid.
     """
-    from inference import _parabolic_offset
+    from decode import argmax_parabolic_native
     logits = hm_logits[0, 0].cpu().numpy()
-    H, W = logits.shape
     prob_full = cv2.resize(1.0 / (1.0 + np.exp(-logits)),
                           (native_w, native_h), interpolation=cv2.INTER_LINEAR)
     peak = float(prob_full.max())
 
     # Canonical center: argmax + parabolic on logits + stride-aware decode.
-    flat = int(logits.argmax())
-    iy, ix = flat // W, flat % W
-    rx = float(ix) + _parabolic_offset(logits, ix, iy, axis="x")
-    ry = float(iy) + _parabolic_offset(logits, ix, iy, axis="y")
-    stride_x = native_w / W
-    stride_y = native_h / H
-    cx_native = max(0, min(native_w - 1, int(round(rx * stride_x + (stride_x - 1.0) / 2.0))))
-    cy_native = max(0, min(native_h - 1, int(round(ry * stride_y + (stride_y - 1.0) / 2.0))))
+    cx_native, cy_native, _ = argmax_parabolic_native(logits, native_w, native_h)
 
     # Bbox: argmax in upsampled prob (still useful for CC analysis below).
     iy_full, ix_full = np.unravel_index(np.argmax(prob_full), prob_full.shape)
