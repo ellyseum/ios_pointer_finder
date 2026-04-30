@@ -485,7 +485,21 @@ def train_loop(args):
     # shuffle order, model init, and dropout. With it, training is
     # bit-exact across runs (as far as floating-point determinism allows;
     # see --strict-determinism for the cudnn knobs).
-    seed = int(args.seed) if args.seed is not None else 42
+    #
+    # When run inside `train_continuous.sh`'s warm-restart loop, the
+    # environment variable `IPF_PASS_ID` is set per pass. We mix it into
+    # the seed so each pass sees a different DataLoader shuffle order and
+    # augmentation sequence — without this, every warm-restart pass would
+    # see identical data ordering, defeating the diversity benefit of
+    # warm restarts.
+    base_seed = int(args.seed) if args.seed is not None else 42
+    pass_id_str = os.environ.get("IPF_PASS_ID", "").strip()
+    pass_offset = int(pass_id_str) if pass_id_str.isdigit() else 0
+    seed = (base_seed + pass_offset * 1009) % (2 ** 31)  # 1009 prime, decorrelates passes
+
+    # (CUBLAS_WORKSPACE_CONFIG is set in main() before train_loop runs, so
+    # cuBLAS sees it at handle init regardless of where torch.cuda gets
+    # touched first inside this function.)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -494,12 +508,11 @@ def train_loop(args):
     if getattr(args, "strict_determinism", False):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-        try:
-            torch.use_deterministic_algorithms(True, warn_only=True)
-        except Exception:
-            pass
-    print(f"  seed={seed}  strict_determinism={getattr(args, 'strict_determinism', False)}")
+        # No `warn_only=True`: if a non-deterministic op runs, we want the
+        # explicit RuntimeError — that's the signal the run isn't bit-exact.
+        torch.use_deterministic_algorithms(True)
+    print(f"  base_seed={base_seed}  pass_offset={pass_offset}  effective_seed={seed}  "
+          f"strict_determinism={getattr(args, 'strict_determinism', False)}")
 
     # If resuming, peek at the checkpoint metadata FIRST so we can carry the
     # previous run's val_bg_ids forward — keeps the val_pos_err metric on
@@ -514,8 +527,14 @@ def train_loop(args):
                 with open(sidecar) as f:
                     meta = json.load(f)
         else:
+            # `weights_only=True` is the safe peek path: it loads only
+            # tensor data + a small whitelist of plain Python types, so the
+            # full pickle (and its arbitrary-code-execution surface) never
+            # runs. We just need the metadata fields, not the model state
+            # dict — that gets loaded later on `device` via the canonical
+            # weights_only=False path.
             try:
-                _peek = torch.load(args.resume, map_location="cpu", weights_only=False)
+                _peek = torch.load(args.resume, map_location="cpu", weights_only=True)
                 meta = _peek if isinstance(_peek, dict) else None
                 del _peek
             except Exception:
@@ -872,6 +891,12 @@ def main() -> int:
                         "instead of starting from scratch). Optimizer + LR schedule reset, "
                         "which acts like a cosine restart.")
     args = p.parse_args()
+    # Set CUBLAS_WORKSPACE_CONFIG BEFORE any `torch.cuda.*` call (including
+    # the device-name print at the top of train_loop, which triggers cuBLAS
+    # handle initialization via _lazy_init). cuBLAS reads the env var only
+    # at handle creation; setting it later is a no-op.
+    if getattr(args, "strict_determinism", False):
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     return train_loop(args)
 
 

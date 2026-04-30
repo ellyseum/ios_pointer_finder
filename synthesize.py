@@ -492,30 +492,15 @@ def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     color = pick_cursor_color(bg_patch)
     bg = bg_orig.copy()
     bg, _vis = composite(bg, sprite, cx, cy, color)
-    # Persist decoy size so the train-time crop sampler can protect the
-    # decoy footprint. Without this, hard_neg crops can clip large decoys
-    # and turn "edge-clipped cursor-like blob = negative" into supervision
-    # that directly contradicts edge_pos's "clipped cursor = positive".
-    #
-    # `decoy_pos` reports the alpha-mass centroid of the decoy (in image
-    # coords), not the canvas center. Some decoy generators
-    # (`make_decoy_doubled_dot` especially) place asymmetric mass — the
-    # canvas-center for that decoy is the gap between two dots, not where
-    # the visual mass actually is. The crop guard needs the real centroid.
-    yy_d, xx_d = np.indices(sprite.shape, dtype=np.float32)
-    mass = float(sprite.sum())
-    if mass > 1e-6:
-        local_cx = float((sprite * xx_d).sum() / mass)
-        local_cy = float((sprite * yy_d).sum() / mass)
-    else:
-        local_cx = (pw - 1) / 2.0
-        local_cy = (ph - 1) / 2.0
-    decoy_anchor_x = float(cx - pw // 2) + local_cx
-    decoy_anchor_y = float(cy - ph // 2) + local_cy
+    # `decoy_pos` is the canvas center (the placement anchor passed into
+    # `composite`). The train-time crop guard uses `decoy_pos ± decoy_w/2`
+    # symmetric math, which only protects the full canvas when `decoy_pos`
+    # IS the canvas center — switching to the alpha-mass centroid would
+    # offset the protected box from the actual canvas extent for
+    # asymmetric decoys (`doubled_dot`, directional `wedge`).
     return augment(bg), {
         "x": -1, "y": -1, "has_cursor": 0, "sample_type": "hard_neg",
-        "decoy_type": decoy_type,
-        "decoy_pos": [round(decoy_anchor_x, 2), round(decoy_anchor_y, 2)],
+        "decoy_type": decoy_type, "decoy_pos": [cx, cy],
         "decoy_w": pw, "decoy_h": ph,
     }
 

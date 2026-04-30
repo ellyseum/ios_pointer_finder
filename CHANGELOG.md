@@ -2,6 +2,15 @@
 
 All notable changes to ios_pointer_finder are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning per `bump.sh` policy (see `CONTRIBUTING.md`).
 
+## [0.6.2] - Unreleased
+
+### Fixed
+- Warm-restart diversity restored. v0.6.1's global RNG seeding made every warm-restart pass reuse seed=42, producing the same DataLoader shuffle order and augmentation sequence pass-after-pass — defeating the diversity benefit of SGDR. `train.py` now mixes `IPF_PASS_ID` (set per pass by `train_continuous.sh`) into the effective seed via `(base_seed + pass_offset * 1009) % 2^31` so each pass sees a unique data ordering while remaining bit-exact reproducible.
+- `--strict-determinism` now actually deterministic on CUDA. `CUBLAS_WORKSPACE_CONFIG` was being set AFTER `torch.cuda.manual_seed_all()`, but cuBLAS reads that env var only at handle creation — so the env-var was a no-op. Moved the env-var set before any `torch.cuda.*` call. Also dropped `warn_only=True` from `torch.use_deterministic_algorithms` so non-deterministic ops raise rather than silently warn.
+- Hard-negative crop guard correctly protects asymmetric decoys. v0.6.1 changed `decoy_pos` from canvas-center to the alpha-mass centroid; the train-time guard's symmetric `± decoy_w/2` math then under-protected decoys whose mass is offset within the canvas (`doubled_dot`'s right dot scaled 0.6-1.0 → centroid LEFT of canvas; directional `wedge`). Reverted `decoy_pos` to canvas-center.
+- `train.py` resume metadata peek now uses `weights_only=True`. Avoids re-executing the pickle (and its arbitrary-code surface) twice for the val_bg_ids inheritance path.
+- `test_real.py` and `test_real_bbox.py` now accept `.safetensors` checkpoints (were `.pt`-only). Same suffix-detect pattern as v0.6.1's `click_at.py` / `eval_v03.py` fixes.
+
 ## [0.6.1] - Unreleased
 
 ### Added

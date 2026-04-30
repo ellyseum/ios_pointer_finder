@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import sys
 
@@ -116,12 +117,23 @@ def main() -> int:
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
     print(f"device: {device}")
 
-    ckpt = torch.load(args.weights, map_location=device, weights_only=False)
-    print(f"checkpoint epoch={ckpt.get('epoch')}  val_pos_err={ckpt.get('val_pos_err_px'):.1f}px  "
-          f"train_size={ckpt.get('train_size')}  native_size={ckpt.get('native_size')}")
-
+    suffix = os.path.splitext(args.weights)[1].lower()
     model = PointerNet().to(device).eval()
-    model.load_state_dict(ckpt["model"])
+    if suffix == ".safetensors":
+        from safetensors.torch import load_file
+        model.load_state_dict(load_file(args.weights))
+        sidecar = os.path.splitext(args.weights)[0] + ".config.json"
+        ckpt = {}
+        if os.path.exists(sidecar):
+            with open(sidecar) as f:
+                ckpt = json.load(f)
+    else:
+        ckpt = torch.load(args.weights, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model"])
+    _vpe = ckpt.get("val_pos_err_px")
+    _vpe_str = "n/a" if _vpe is None else f"{_vpe:.1f}px"
+    print(f"checkpoint epoch={ckpt.get('epoch', '?')}  val_pos_err={_vpe_str}  "
+          f"train_size={ckpt.get('train_size')}  native_size={ckpt.get('native_size')}")
 
     frames = sorted(glob.glob(os.path.join(args.test_dir, "*.png")))
     print(f"frames: {len(frames)}\n")
