@@ -2,6 +2,42 @@
 
 All notable changes to ios_pointer_finder are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning per `bump.sh` policy (see `CONTRIBUTING.md`).
 
+## [0.7.0] - Unreleased
+
+### Fixed (data integrity — see "What broke" below)
+
+- **Synthesis pipeline targeted the wrong asset.** `sprites/at_dot.png` shipped under the description "captured iOS Pointer-Control sprite" but was actually a rounded-rectangle iOS UI badge with a baked-in checkmark. Five months of training (v0.5 → v0.6.2) descended cleanly on the wrong target — validation curves looked healthy because the supervision signal was *consistent*, just incorrect. Discovered when a contact sheet of the synth output was rendered for the first time. Removed the asset; `synthesize.py` now requires any sprite at `SPRITE_PATH` to ship with an approved sidecar manifest at `<stem>.config.json` (sha256, approved_by, approved_at) — absence of the sidecar fails hard. The procedural smoothstep disc is the canonical synth target; a captured sprite remains an option but is gated on visual review (see `CONTRIBUTING.md`).
+
+- **Real-frame regression eval was a silent no-op.** `test_real.py` referenced a `real_pointer_test/` directory that did not exist in the repo, exiting 0 with zero frames loaded. Real-frame quality has been unmeasured for an unknown number of releases — only synthetic validation was actually being checked. Replaced by `tests/test_real_frame_eval.py`: bundles eight iPhone-screenshot fixtures into `tests/fixtures/real/` with a hand-annotated and bootstrapped `ground_truth.json`, asserts frame count == 8, and gates on bg-00000 prediction error ≤ 50 px. The "frame count == 8" assertion is specifically there to catch the original failure mode.
+
+- **Decoder duplication regressed across deployment paths.** `click_at.py` carried its own `PointerFinder` class and `_parabolic_subpixel` function that diverged from `inference.PointerFinder` — different border behavior, different clamp, different stride math, slowly drifting from each other. Extracted the canonical decode path into `decode.py`: `argmax_parabolic_native(logits, native_w, native_h) -> (x, y, peak_logit)`. Every consumer now imports from there: `inference.py`, `click_at.py`, `test_real.py`, `test_real_bbox.py`, `eval_v03.py`. A pre-flight regression fixture pins the decoder output on three test frames so future refactors cannot silently change deployment behavior.
+
+### Changed
+
+- **Heatmap BCE reduction switched from mean to sum.** `.mean(dim=(2,3))` over 8505 cells made the per-positive-cell localization gradient ~1400× weaker than the confidence-head gradient at the shared backbone. The model learned "is something here" fast and "where exactly" slowly, exactly tracking the v0.5/v0.6 confidence-accuracy plateau near the dataset prior. New form: `.sum(dim=(2,3))` with `HM_WEIGHT=2e-5` (calibrated empirically by sweeping candidates and picking the value where heatmap and conf gradient norms are equal at the backbone). Naively scaling `HM_WEIGHT_v07 = HM_WEIGHT_v06 / 8505` would have been algebraically identity-equivalent to the previous code; the new value shifts the actual balance.
+
+- **Confidence head pooling: AdaptiveAvgPool → AdaptiveMaxPool.** The avg-pool washed the ~5×5-cell cursor signal across the 63×135 feature map, and the head defaulted to predicting the dataset's positive prior (~70%) — same plateau across every prior version. Max-pool preserves the local cursor signal for the confidence decision while keeping the head's external contract unchanged.
+
+- **Outer ~7-px border parabolic refinement.** When the heatmap argmax landed at cell 0 or W-1, the previous decoder returned offset 0 (no neighbor on one side), flooring `edge_pos` slice error at `(stride-1)/2 ≈ 7-8 px`. New one-sided parabolic fit recovers sub-cell precision up to half a cell beyond the heatmap edge.
+
+- **Validation metric: `normal_pos_err` only for checkpoint selection.** Previously combined `normal_pos` and `edge_pos` errors. `edge_pos` ground truth is the visible-centroid of clipped sprites — noisier label, and the slice that doesn't drive deployment click accuracy. Both are still logged each epoch (`val_pos_err=...(normal_pos)` + `val_combined=...`) so the v0.6.x baseline can still be compared.
+
+- **Stride convention: `STRIDE_TRAIN=16` (structural) + per-axis native stride (derived).** Three stride-2 conv blocks × 2x train→native give 16x effective downsample at train resolution; native stride is `NATIVE_DIM / HM_DIM` per axis (asymmetric: 994/63=15.778 across X, 2160/135=16.0 across Y). Code now distinguishes the two so future fixes target the right one.
+
+### Added
+
+- **Architecture-version pin in checkpoint sidecars.** `architecture_version=2` field in `<stem>.config.json`. Loaders assert match; pre-v0.7 checkpoints (no field) load with a `RuntimeWarning`, future incompatible-shape changes fail loudly with a "re-train or check out matching code revision" message.
+
+- **Visual-validation gate (`tests/test_synth_visual.py`).** Renders a deterministic 16-cell contact sheet from `synthesize.py` and asserts per-cell SSIM ≥ 0.95 against `tests/golden/synth_contact_sheet.png` plus circularity ≥ 0.85 on the procedural sprite footprint. The circularity check is what would have caught the v0.5/v0.6 sprite mistake — a checkmark-pill footprint scores ~0.78, the smoothstep disc scores ~0.91. Future synth-pipeline changes that legitimately move the golden require regenerating it via the helper script and visually approving the new contact sheet in a separate commit.
+
+- **Decoder baseline snapshot (`tests/baselines/v07_decoder_baseline.json`).** Records v0.4.0 22.9px and v0.6.2 (broken-sprite) predictions on the eight bundled real fixtures through the v0.7 canonical decoder. Reference for future regression checks: any decoder change that moves v0.4's bg-00000 result more than 5 px from the recorded 7.3 px requires written justification.
+
+- `_run_v07.sh` — committed cold-start training recipe. Previously a working-tree-only scratch script that would have been lost on `rm -rf /tmp` or a reboot.
+
+### What broke and how it was caught
+
+Recording this for future contributors: between v0.5 and v0.6.2, every release shipped on a synth target that was not the iOS Pointer-Control cursor. The asset shipped with a name and code comments declaring it the cursor; ten rounds of code review missed it because reviews looked at code, not pixels; loss curves descended cleanly the whole way because BCE doesn't care whether the target *is* the right thing, only whether the model converges to *some* fixed thing. The mistake surfaced when a contact sheet of the synth output was rendered for human-readable explanation purposes — and a glance at the alpha-thresholded sprite immediately showed it was a rounded rectangle with a green checkmark, not a translucent disc. The v0.7 `test_synth_visual.py` gate, the `tests/fixtures/real/` regression suite, and the `synthesize.py` sidecar requirement are the structural fixes meant to keep this class of mistake from happening twice.
+
 ## [0.6.2] - Unreleased
 
 ### Fixed
