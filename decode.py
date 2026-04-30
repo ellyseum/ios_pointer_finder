@@ -28,25 +28,54 @@ import numpy as np
 def parabolic_offset(hm: np.ndarray, ix: int, iy: int, axis: str) -> float:
     """Sub-cell offset of the parabola fit through the argmax cell + 2 neighbors.
 
-    For axis 'x', uses ``hm[iy, ix-1], hm[iy, ix], hm[iy, ix+1]``.
-    For axis 'y', uses ``hm[iy-1, ix], hm[iy, ix], hm[iy+1, ix]``.
+    Standard interior case (axis 'x'): fit through
+    ``hm[iy, ix-1], hm[iy, ix], hm[iy, ix+1]``. Parabola vertex offset from
+    the integer cell is in ``[-0.5, 0.5]``.
 
-    Returns 0.0 when the argmax is on the heatmap border (no valid
-    neighbor) or when the parabola is degenerate (denominator near zero —
-    flat heatmap). Returned offset is clamped to ``[-0.5, 0.5]``: the
-    parabola vertex cannot be more than half a cell from the integer
-    cell if that cell really is the argmax.
+    Border case (v0.7 #14): when the argmax sits at cell 0 or W-1 (no
+    valid neighbor on one side), fall back to a one-sided fit through
+    the argmax cell + the next two cells inward. Without this, every
+    edge_pos sample's error floors at ``(stride-1)/2 ≈ 7-8 px`` because
+    the decoder snaps to the cell-center. With it, sub-cell precision
+    is recovered up to half a cell beyond the heatmap edge.
+
+    Degenerate parabola (denominator near zero — flat heatmap) returns 0.0.
     """
     H, W = hm.shape
     if axis == "x":
-        if ix <= 0 or ix >= W - 1:
-            return 0.0
+        # Three taps centered on the argmax, or one-sided at the border.
+        if ix <= 0:
+            if W < 3:
+                return 0.0
+            a = float(hm[iy, 0])  # argmax (left edge)
+            b = float(hm[iy, 1])
+            c = float(hm[iy, 2])
+            return _parabolic_offset_one_sided(a, b, c, side="left")
+        if ix >= W - 1:
+            if W < 3:
+                return 0.0
+            a = float(hm[iy, W - 3])
+            b = float(hm[iy, W - 2])
+            c = float(hm[iy, W - 1])  # argmax (right edge)
+            return _parabolic_offset_one_sided(a, b, c, side="right")
         a = float(hm[iy, ix - 1])
         b = float(hm[iy, ix])
         c = float(hm[iy, ix + 1])
     else:
-        if iy <= 0 or iy >= H - 1:
-            return 0.0
+        if iy <= 0:
+            if H < 3:
+                return 0.0
+            a = float(hm[0, ix])
+            b = float(hm[1, ix])
+            c = float(hm[2, ix])
+            return _parabolic_offset_one_sided(a, b, c, side="left")
+        if iy >= H - 1:
+            if H < 3:
+                return 0.0
+            a = float(hm[H - 3, ix])
+            b = float(hm[H - 2, ix])
+            c = float(hm[H - 1, ix])
+            return _parabolic_offset_one_sided(a, b, c, side="right")
         a = float(hm[iy - 1, ix])
         b = float(hm[iy, ix])
         c = float(hm[iy + 1, ix])
@@ -58,6 +87,40 @@ def parabolic_offset(hm: np.ndarray, ix: int, iy: int, axis: str) -> float:
         off = 0.5
     elif off < -0.5:
         off = -0.5
+    return off
+
+
+def _parabolic_offset_one_sided(a: float, b: float, c: float, side: str) -> float:
+    """One-sided parabolic fit when the argmax sits at the heatmap border.
+
+    For ``side='left'``: fit y(t) = αt² + βt + γ through points
+    ``(0, a), (1, b), (2, c)`` where ``a`` is the argmax. Offset returned
+    is the vertex position relative to t=0, clamped to ``[-0.5, 0]``
+    (the actual peak cannot lie more than half a cell beyond the heatmap
+    edge, and cannot be inside the heatmap or cell 1 would have been the
+    argmax).
+
+    For ``side='right'``: fit through ``(0, a), (1, b), (2, c)`` where
+    ``c`` is the argmax. Offset returned is relative to t=2, clamped to
+    ``[0, 0.5]``.
+    """
+    denom = a - 2.0 * b + c
+    if abs(denom) < 1e-9:
+        return 0.0
+    if side == "left":
+        # Vertex t* = (3a + c - 4b) / (2*(a - 2b + c)); offset from t=0.
+        off = (3.0 * a + c - 4.0 * b) / (2.0 * denom)
+        if off > 0.0:
+            off = 0.0
+        elif off < -0.5:
+            off = -0.5
+        return off
+    # side == 'right'; offset from t=2.
+    off = (3.0 * c + a - 4.0 * b) / (2.0 * denom)
+    if off < 0.0:
+        off = 0.0
+    elif off > 0.5:
+        off = 0.5
     return off
 
 
