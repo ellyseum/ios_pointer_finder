@@ -647,18 +647,24 @@ def train_loop(args):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
-    # Loss weights (v0.3)
-    HM_WEIGHT = 10.0          # heatmap BCE total
-    # v0.5: separate weights for plain_neg (trivial — model emits flat heatmap
-    # within a few epochs) vs hard_neg (decoy distractors, the actual
-    # discriminative signal). Equal weighting wasted ~half the negative
-    # gradient on samples the model already gets right.
+    # Loss weights (v0.7).
+    #
+    # v0.7-7b: heatmap BCE switched to .sum(dim=(2,3)) — see hm_loss_per_b
+    # below. Pre-v0.7 used .mean(dim=(1,2)) over 8505 cells, which made the
+    # effective per-positive-cell heatmap gradient ~1400× weaker than the
+    # confidence head's gradient (calibrated empirically — confidence
+    # accuracy plateaued near the dataset prior because localization
+    # gradient was nearly absent at the shared backbone).
+    #
+    # HM_WEIGHT = 2e-5 calibrated by sweeping {5e-6, 1e-5, 2e-5, 5e-5, 1e-4,
+    # 5e-4} over 25-step micro-runs and picking the value where the
+    # heatmap-head gradient norm ≈ conf-head gradient norm at the shared
+    # backbone (target ratio 1.0; observed ratio at 2e-5 = 0.948).
+    HM_WEIGHT = 2e-5
     HM_PLAIN_NEG_REL = 0.25   # trivial backgrounds — small contribution
     HM_HARD_NEG_REL = 1.0     # decoy cursors — full weight, primary neg signal
     HM_NEG_REL_LEGACY = 0.5   # used when sample_type is unknown (legacy datasets)
-    # v0.5.1: xy regression head removed entirely from PointerNet.forward.
-    # Inference uses hard argmax + parabolic on raw logits via heatmap_to_xy_px.
-    CONF_WEIGHT = 2.0         # bumped from 1.0 — conf head needs more pressure
+    CONF_WEIGHT = 2.0         # unchanged from v0.6
 
     # Carry over the previous run's best so the rolling pointer (--weights-out)
     # only updates when this invocation actually beats the previous global
@@ -707,9 +713,14 @@ def train_loop(args):
             # → flat heatmap" supervision signal.)
             target_hm_pos = make_target_heatmap(target_xy, H, W)
             target_hm = target_hm_pos * pos_mask.view(-1, 1, 1, 1)
+            # v0.7-7b: sum over the 8505 cells, not mean. mean diluted the
+            # localization gradient by the cell-count denominator; sum keeps
+            # per-positive-cell pressure intact, and HM_WEIGHT compensates so
+            # heatmap and conf head gradients are comparable at the shared
+            # backbone (see HM_WEIGHT comment above).
             hm_loss_per_b = F.binary_cross_entropy_with_logits(
                 pred_hm.squeeze(1), target_hm.squeeze(1), reduction='none'
-            ).mean(dim=(1, 2))
+            ).sum(dim=(1, 2))
             hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
             hm_plain_neg_loss = (hm_loss_per_b * plain_mask).sum() / plain_count
             hm_hard_neg_loss = (hm_loss_per_b * hard_mask).sum() / hard_count
