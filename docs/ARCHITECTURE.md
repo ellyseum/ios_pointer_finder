@@ -57,68 +57,95 @@ Total downsample is 1/8 of the train input (= 1/16 of native after the 2×
 input resize). The receptive field at the final layer comfortably covers a
 46-px cursor with surrounding context.
 
-| Block | Stride | In ch | Out ch | Spatial output (497×1080 input) |
+| Block | Stride | In ch | Out ch | Spatial output (1080×497 input) |
 |------:|-------:|------:|-------:|---------------------------------|
-| 1     | 2      | 3     | 32     | 540×248                         |
-| 2     | 2      | 32    | 64     | 270×124                         |
-| 3     | 2      | 64    | 96     | 135×62                          |
-| 4     | 1      | 96    | 128    | 135×62                          |
-| 5     | 1      | 128   | 128    | 135×62                          |
+| 1     | 2      | 3     | 32     | 540×249                         |
+| 2     | 2      | 32    | 64     | 270×125                         |
+| 3     | 2      | 64    | 96     | 135×63                          |
+| 4     | 1      | 96    | 128    | 135×63                          |
+| 5     | 1      | 128   | 128    | 135×63                          |
 
-Heatmap head: 1×1 conv → 1 channel.
+Heatmap head: 1×1 conv → 1 channel (raw logits, no sigmoid in `forward`).
 Confidence head: AdaptiveAvgPool2d(1) → Linear(128, 32) → ReLU → Linear(32, 1).
+
+`PointerNet.forward(x)` returns `(conf_logit, heatmap_logits)`.
 
 ## Loss
 
 ```
-L_total = L_heatmap + λ_xy · L_xy + λ_conf · L_conf
+L_total = HM_WEIGHT · L_heatmap  +  CONF_WEIGHT · L_conf
 ```
 
-- `L_heatmap`: focal-modulated MSE between predicted heatmap and a Gaussian
-  centered on the cursor (σ matches cursor radius). Computed only on
-  positives. Mask zeros out heatmap loss for negatives so the model isn't
-  punished for hot spots when no cursor exists.
-- `L_xy`: MSE on (x_norm, y_norm) ∈ [0, 1]² for positive samples only. Kept
-  for back-compat with v0.2 inference paths; deprecated in favor of heatmap
-  argmax.
-- `L_conf`: BCE on the global confidence head against `has_cursor`.
+- `L_heatmap`: per-cell BCE-with-logits between predicted heatmap and a
+  Gaussian target centered on the cursor (σ = 1.25 cells ≈ FWHM matches
+  cursor diameter at native resolution). Split into three weighted terms:
+  - **positives**: weight 1.0
+  - **hard negatives** (decoy cursor shapes): weight 1.0
+  - **plain negatives** (untouched background): weight 0.25
 
-The mask is the v0.3 fix that flipped accuracy: in v0.2 the heatmap was
-regressed against zeros for negatives, which trained the model to push
-down activations everywhere, including in regions that legitimately have
-cursor-like features. With the mask, the negative supervision is limited
-to the conf head and the model is free to express "looks cursor-shaped"
-in the heatmap as long as conf says no.
+  Plain-negs are trivial supervision (model learns to emit a flat heatmap
+  on any unfamiliar bg within a few epochs); hard_neg supervision is what
+  forces the model to discriminate cursor-from-distractor and gets the
+  full weight. Without the split, ~half the negative gradient goes to
+  samples the model already gets right.
+
+- `L_conf`: BCE-with-logits on the confidence head against `has_cursor`.
+
+The mask isolates negative supervision so the model isn't pushed to flatten
+the heatmap globally (the v0.3 fix that flipped accuracy). Negatives still
+contribute to the heatmap loss, but with target=0 — which is the correct
+"no cursor anywhere" signal — and at the appropriate weight per neg type.
 
 ## Train-time augmentation
 
-Each `__getitem__` (when augment=True):
+Each `__getitem__` (when `augment=True`):
 
-1. Random crop ~7% of each axis before resize. Forces spatial invariance —
-   the model can't memorize "exact pixel pattern at exact location".
-2. Random horizontal flip (cursor sprite is rotationally symmetric; just mirror x).
-3. Photometric jitter: brightness ± 0.1, optional small Gaussian noise.
+1. **Cursor-safe random crop.** Up to 7% of each axis. The protected region
+   is the asymmetric sprite footprint around the click anchor: the iOS
+   pointer's alpha mass is biased toward the upper-left of its tile, so the
+   guard uses `[label_x - hx, label_x + (d - hx)] × [label_y - hy, label_y + (d - hy)]`
+   not a symmetric radius. Hard-negative samples carry the persisted decoy
+   bbox; their crop respects the decoy footprint too. If 8 random trials
+   fail to find a valid crop window, the sample skips augmentation
+   (full-frame, no flip / no brightness jitter).
+2. **Horizontal flip 50% — negatives only.** The real captured cursor sprite
+   is left-right asymmetric (~31% alpha asymmetry), so flipping a positive
+   shows the model a mirrored shape that doesn't exist at inference.
+   Backgrounds (negs) flip freely.
+3. **Photometric jitter.** Brightness ± 8% (synth pre-bakes ±15%, so this
+   is a small additional shift, not the dominant variance source).
 
-This was the v0.3.1 anti-overfit fix. With only ~100 train backgrounds,
-returning the same baked synthesis every epoch let the network memorize
-JPEG noise + bg textures as cursor cues. Online augmentation broke that
-shortcut: v0.3.0 → v0.3.1 went from clearly-overfitting (train loss near
-zero, val plateau at 8 px) to a useful generalizer (val 30 px, real top-1
-hit 47/50).
+Per-worker seeding via `worker_init_fn` ensures DataLoader workers don't
+share Python `random` / numpy RNG state — without this, all workers fork
+with identical state and produce correlated augmentations across the batch.
 
 ## Inference
 
 ```python
-img = cv2.imread("snap.jpg")                    # BGR uint8, native size
+img = cv2.imread("snap.jpg")                  # BGR uint8, native size
 small = cv2.resize(img, (TRAIN_W, TRAIN_H), AREA)
-x = ((small / 255.0) - 0.5) / 0.25              # standardize to ~[-2, 2]
-xy_unused, conf_logit, heatmap = model(x)
-conf = sigmoid(conf_logit)
-prob = sigmoid(heatmap)[0, 0]                    # 135×63 in feature space
-iy, ix = unravel_index(argmax(prob))
-cx_native = ix / (W - 1) * NATIVE_W              # W = heatmap width
-cy_native = iy / (H - 1) * NATIVE_H              # H = heatmap height
+x = ((small / 255.0) - 0.5) / 0.25            # standardize to ~[-2, 2]
+conf_logit, heatmap = model(x)                # 2-tuple, raw logits
+conf = sigmoid(conf_logit)                    # presence gate
+logits = heatmap[0, 0]                        # H×W
+flat = argmax(logits)
+iy, ix = unravel_index(flat)
+# Parabolic subpixel refinement on RAW LOGITS (sigmoid saturates near peak
+# and collapses the second derivative the parabola fit needs).
+sub_x = parabolic_offset(logits, ix, iy, axis="x")
+sub_y = parabolic_offset(logits, ix, iy, axis="y")
+rx, ry = ix + sub_x, iy + sub_y
+# Stride-aware decode: cell i has receptive-field center at native pixel
+# i*stride + (stride-1)/2, where stride = native_dim / hm_dim.
+stride_x = NATIVE_W / W
+stride_y = NATIVE_H / H
+cx = round(rx * stride_x + (stride_x - 1.0) / 2.0)
+cy = round(ry * stride_y + (stride_y - 1.0) / 2.0)
 ```
+
+The single canonical decoder lives in `inference.PointerFinder.predict()`.
+Auxiliary scripts (`click_at.py`, `eval_v03.py`, `test_real.py`) all import
+from there to avoid drift.
 
 The resize from native (994×2160) to train (497×1080) is a 2× downsample
 chosen so the cursor stays large enough at the final feature-map stride to
@@ -127,31 +154,36 @@ sub-pixel boundary.
 
 ## Versioning
 
-Every retrain bumps `VERSION`. We commit checkpoint files locally as
-`pointer_model_v{X}.{Y}.{Z}_{val_pos_err}px.pt` so old runs are never
-overwritten. Each commit message tags the version. Each git tag (`v0.3.4`)
+Every retrain bumps `VERSION`. Checkpoint files are saved locally as
+`pointer_model_v{X}.{Y}.{Z}_{val_pos_err}px.{pt|safetensors}` so old runs
+are never overwritten. Each commit message tags the version. Each git tag
 attaches the canonical checkpoint to a GitHub Release.
+
+For `.safetensors` checkpoints, metadata (epoch, val_pos_err_px,
+native/train sizes, version) lives in a sibling `<stem>.config.json`
+sidecar — the same convention `inference.PointerFinder` and
+`scripts/convert_pt_to_safetensors.py` use.
 
 ## Road from here
 
 The shipped checkpoints are calibrated on a single device — iPhone 16 Pro
-Max, iOS 26.3.1, portrait. The model evolves from there in three stages:
+Max, iOS 26.3.1, portrait. The model evolves from there in stages:
 
-**Correctness (v0.4).** Float-label propagation through augmentation;
-parabolic subpixel refinement at inference; ONNX + CoreML + tfjs export
-with numerical parity vs the PyTorch reference; int8 quantization
-ablation. Target: <20 px val pos err on the same calibration device.
-
-**Bootstrap loop (v0.5).** Eliminate the synthetic-data ceiling by
-self-labeling. A v0.4-grade agent drives the cursor across the screen,
+**Bootstrap loop (planned).** Eliminate the synthetic-data ceiling by
+self-labeling. A trained-enough agent drives the cursor across the screen,
 captures real frames, and emits verified labels via a move-and-undo dance
 (motion existence + reversibility supplies ground truth — *not* the
 commanded BLE-HID magnitude, which is iOS-tracking-speed-dependent).
-Retrain on real-cursor data instead of synthesis. Iterate.
+Retrain on real-cursor data alongside synthesis. Iterate.
 
-**Generalization (v0.6+).** Run the bootstrap loop on each currently-shipping
-iPhone (15 / 15 Pro / 16 / 16 Pro / 16 Plus / 16 Pro Max). Combine the
-collected datasets, train one model that handles any current iPhone in
-portrait and landscape. Add a second perception head for per-app UI
-elements (buttons, text fields, dialogs) so the agent layer can address
-elements by name instead of pixel coordinates.
+**Confidence head architecture (planned).** Global-average pooling over
+the cursor's ~5×5 feature-map signal in an 8505-cell map dilutes the
+discriminative signal into the background prior. Replace with max-pooling
+or derive confidence from `heatmap_peak` directly.
+
+**Generalization across iPhones (planned).** Run the bootstrap loop on
+each currently-shipping iPhone (15 / 15 Pro / 16 / 16 Pro / 16 Plus /
+16 Pro Max). Combine the collected datasets, train one model that handles
+any current iPhone in portrait and landscape. Add a second perception
+head for per-app UI elements (buttons, text fields, dialogs) so the agent
+layer can address elements by name instead of pixel coordinates.

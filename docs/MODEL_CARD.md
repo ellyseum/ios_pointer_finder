@@ -1,4 +1,4 @@
-# Model Card — ios_pointer_finder v0.3.4
+# Model Card — ios_pointer_finder v0.6.0
 
 A 338K-parameter convolutional network that predicts the on-screen position of
 the iPhone Pointer-Control cursor from a single screen-capture image.
@@ -15,8 +15,8 @@ the iPhone Pointer-Control cursor from a single screen-capture image.
 | Train resolution             | 497 × 1080                                       |
 | Inference latency (RTX 5080) | 10 ms                                            |
 | Throughput                   | 95 fps                                           |
-| Validation pos-error         | 30.5 px (bg-level held-out split, 12 unseen bgs) |
-| Cursor-free FPR              | <2% at conf ≥ 0.5                                |
+| Validation pos-error         | TBD (cold-start retrain pending — see Roadmap). v0.5 reached 18.9 px on the same dataset before the v0.6.0 fixes landed. |
+| Cursor-free FPR              | <2% at conf ≥ 0.5 (v0.5 measurement; re-measured after v0.6.0 retrain) |
 | Calibration device           | iPhone 16 Pro Max (`iPhone17,2`), iOS 26.3.1     |
 | Native capture resolution    | 994 × 2160 (iPhone 16 Pro Max AirPlay H264 stream) |
 | Weights license              | CC-BY-4.0                                        |
@@ -45,7 +45,7 @@ change per device. Smaller / older iPhones (iPhone 13 mini etc.) and
 iPad will likely need a retrain — different stream resolutions, different
 status-bar heights, different home-screen densities.
 
-The v0.5+ bootstrap loop (see Roadmap) is designed to absorb this by
+The v0.7+ bootstrap loop (see Roadmap) is designed to absorb this by
 self-labeling new device captures rather than synthesizing more.
 
 ## Out-of-scope
@@ -55,7 +55,7 @@ self-labeling new device captures rather than synthesizing more.
 - Multi-cursor scenes.
 - iOS macros/Switch Control overlays.
 - Landscape orientation (training distribution is portrait 994×2160).
-- Devices other than iPhone 16 Pro Max (until v0.6+ generalization).
+- Devices other than iPhone 16 Pro Max (until v0.7+ generalization).
 
 ## Architecture
 
@@ -65,19 +65,27 @@ Input  (3, 1080, 497)
    ↓ 2 × Conv-BN-ReLU stride-1 (96→128→128)
 Feature map (128, 135, 63)     # 1/8 of train resolution = 1/16 of native
    ↓
-   ├── 1×1 conv → 1 channel    →  heatmap (sigmoid)
+   ├── 1×1 conv → 1 channel    →  heatmap logits
    └── global avg pool + MLP   →  confidence logit (1)
 ```
 
-The heatmap is the primary localization signal. v0.3.x uses a plain argmax
-on the heatmap, scaled back to native (994 × 2160) via normalized coordinates
-(no stride math at inference time). Parabolic subpixel refinement is planned
-for v0.4. The confidence head is trained as a binary classifier on
-`has_cursor` and used as a presence gate.
+The heatmap is the primary localization signal. Inference applies argmax +
+parabolic-subpixel refinement on **raw logits** (not sigmoid output — the
+sigmoid saturates near the peak and collapses the second derivative the
+parabola fit relies on), then maps the cell index to native pixels via the
+**stride convention** (cell `i` has receptive-field center at native pixel
+`i*stride + (stride-1)/2`). This replaces the v0.4 linear-stretch mapping
+that quietly forced the model to learn a non-uniform spatial warp.
 
-The original architecture also had a regression head (xy MLP). It survives in
-the forward pass for backward compatibility with old eval harnesses, but the
-heatmap head dominates accuracy and is what `inference.py` uses.
+The confidence head is a separate global-average-pool branch trained as a
+binary classifier on `has_cursor`.
+
+**v0.6.0 forward signature** (BREAKING from v0.5): `PointerNet.forward(x)`
+returns `(conf_logit, heatmap_logits)`. The earlier soft-argmax `xy` head
+was removed — it had been weighted at 0 since v0.5 and used a different
+coordinate convention than the deployed inference path. Decoders should
+import `inference.PointerFinder` (or use argmax + parabolic on the raw
+heatmap logits) to recover `(x, y)`.
 
 ## Training data
 
@@ -86,75 +94,90 @@ heatmap head dominates accuracy and is what `inference.py` uses.
 | Sample type   | Default mix | Description |
 |---------------|------------:|-------------|
 | `normal_pos`  | 55%         | Full cursor at random position with margin |
-| `edge_pos`    | 15%         | Cursor partially clipped at a screen edge; visible-centroid label |
+| `edge_pos`    | 15%         | Cursor partially clipped at a screen edge; alpha-mass-centroid label |
 | `hard_neg`    | 15%         | "Decoy cursor" composites: wrong-size discs, hollow rings, ellipses, doubled dots, I-beam strokes, white wedges. `has_cursor=0`. |
 | `plain_neg`   | 15%         | Unmodified background. `has_cursor=0`. |
 
-The cursor sprite itself is *programmatically generated* in
-`synthesize.py:make_pointer_mask` as a soft-edge disc (Gaussian falloff,
-diameter ~46 px, peak alpha 0.25, calibrated against measurements of the
-real on-screen cursor). No iOS image assets are used.
+The cursor sprite ships in the repo as `sprites/at_dot.png` — a real
+36×36 alpha-matted capture of the iOS Pointer-Control cursor. v0.5+
+loads it via `synthesize.py:make_pointer_sprite()` and uses the **alpha-
+mass centroid** (not the geometric tile center) as the click anchor for
+labels, since the iOS pointer's alpha is biased toward the upper-left of
+its tile. Earlier versions (v0.4 and below) used a programmatically-
+generated soft-disc approximation; that mismatch was a measurable chunk
+of the v0.4 sim-to-real gap.
 
-Backgrounds for our published checkpoints were 130 cursor-free real iPhone
-screen captures from the trainer's own device, not redistributed. To
-reproduce locally, see [`DATASET.md`](DATASET.md) — bring your own
+Backgrounds for our published checkpoints were ~120 cursor-free real
+iPhone screen captures from the trainer's own device, not redistributed.
+To reproduce locally, see [`DATASET.md`](DATASET.md) — bring your own
 backgrounds, run `synthesize.py`, train.
 
 ## Training procedure
 
 | Hyperparameter | Value             |
 |----------------|-------------------|
-| Optimizer      | AdamW, lr=3e-4, weight_decay=1e-4 |
-| Schedule       | Cosine annealing (30 epochs total per training run) |
+| Optimizer      | AdamW, lr=1e-3, weight_decay=1e-3 |
+| Schedule       | Cosine annealing per pass; warm restarts via `train_continuous.sh` (SGDR-style) |
 | Batch          | 64                |
-| Epochs         | 30 (v0.3.4 = cosine restart from v0.3.3's best) |
-| Dataset size   | ~150,000 synthetic samples per generation |
-| Augmentation   | Random 7% crop + horizontal flip + photometric jitter (online, train only) |
+| Epochs/pass    | 15 (configurable; SGDR T_max = 15 by default) |
+| Auto-stop      | 3 consecutive stale passes (no global-best improvement) |
+| Dataset size   | ~125,000 synthetic samples per generation |
+| Augmentation   | Cursor-safe random crop (asymmetric protection around hotspot) + photometric jitter (online, train only). H-flip enabled on negatives only — the real sprite is left-right asymmetric. |
 | Val split      | bg-level (10% of unique backgrounds held out — no leakage) |
-| Loss           | MSE on (x, y) for positives + BCE on conf for all + heatmap focal loss |
+| Loss           | BCE on heatmap logits (split into pos / hard_neg / plain_neg with weights 1.0 / 1.0 / 0.25) + BCE on confidence |
+| Heatmap target | Gaussian, σ=1.25 cells (FWHM ≈ cursor diameter at native resolution) |
 | Hardware       | Single RTX 5080, 16 GB VRAM |
-| Wall-clock     | ~25 min for 30 epochs on the v0.3.4 dataset |
+| Wall-clock     | ~7 min/epoch, ~100 min per 15-epoch pass |
 
-Seed: 42 throughout (deterministic train/val split, augmentation rng).
+Seed: 42 throughout (deterministic train/val split + per-worker RNG seeding
+via `worker_init_fn` so DataLoader workers don't share `random` state).
 
 ## Evaluation
 
-### v0.3.4 (current best)
+### v0.6.0 — pending
 
-| Slice                                  | Value     |
-|----------------------------------------|----------:|
-| Validation positional error (mean)     | 30.5 px   |
-| Validation positional error (median)   | 18.4 px   |
-| Validation positional error (95th pct) | 102 px    |
-| Cursor-free FPR @ conf ≥ 0.5           | 1.7%      |
-| Real-frame top-1 hit (50-frame manual set) | 49/50 |
+The first v0.6.0 cold-start training run is queued. The expected baseline is
+the v0.5 best (18.9 px) plus whatever lift comes from the v0.6.0 fixes
+(canonical decoder unification across `inference.py`/`click_at.py`/eval
+scripts; H-flip disabled on positives; asymmetric crop respecting the real
+sprite hotspot; hard-negative crop guard; coordinate-system + parabolic-
+domain corrections). Updated numbers will land here when the run completes.
 
-### Cross-version comparison
+### Cross-version comparison (synthetic val)
 
 | Version | val_pos_err | cursor-free FPR | real top-1 | Notes |
 |--------:|------------:|----------------:|-----------:|-------|
-| v0.2    | 73.9 px     | 27%             | 41/50      | Initial release |
-| v0.3.0  | 30.8 px*    | 8%              | 47/50      | Heatmap head + bg-level split (val number leaky on this run) |
-| v0.3.1  | 39.6 px     | 6%              | 48/50      | + train-time augmentation |
-| v0.3.2  | 43.4 px     | 5%              | 48/50      | Faster augmentation kernel |
-| v0.3.3  | 35.4 px     | 3%              | 49/50      | Cosine restart |
-| **v0.3.4** | **30.5 px** | **1.7%**     | **49/50**  | Cosine restart from v0.3.3, full 30 epochs |
+| v0.2    | 73.9 px     | 27%             | 41/50      | Initial release. Sample-level val split (leaky). Procedural sprite. |
+| v0.3.4  | 30.5 px     | 1.7%            | 49/50      | Heatmap head + bg-level honest split + hard negatives. Procedural sprite, linear-stretch coords, soft-argmax MSE. |
+| v0.4.0  | 22.9 px     | <2%             | —          | Correctness wave: float labels through augmentation, parabolic subpixel, mask-aware heatmap eval. Still procedural sprite. |
+| v0.5.0  | 18.9 px     | <2%             | —          | Real captured sprite, alpha-centroid labels, stride coord convention, parabolic on logits, sigma 1.25, plain/hard neg loss split. |
+| **v0.6.0** | **TBD**  | **TBD**         | **TBD**    | v0.5 plus: forward signature simplified (conf, heatmap); H-flip off for positives; asymmetric crop; hard-neg footprint protection; canonical decoder used by all aux scripts. |
 
-*v0.3.0 used a sample-level val split that leaks backgrounds across train/val — the published number was over-optimistic. v0.3.x and later use bg-level splits and are honest.
+The v0.4 → v0.5 jump (22.9 → 18.9) came from a coherent set of label-correctness
+and decoder-domain fixes: real captured sprite + alpha-centroid labels (replacing
+a procedural disc + geometric-center labels), stride-aware coordinate mapping
+(replacing a linear stretch that forced a non-uniform spatial warp), parabolic
+subpixel refinement on raw logits (replacing sigmoid-domain refinement that
+saturated near peaks), and tighter Gaussian-target sigma. v0.5 → v0.6 followed
+up with an architectural simplification (dropping the unused soft-argmax head)
+and more augmentation correctness work (asymmetric cursor-safe crop matching
+the real-sprite hotspot, H-flip disabled on positives since the real sprite is
+left-right asymmetric, hard-negative crop guard, decoder-path consolidation).
+Empirical v0.6 numbers will land here once the cold-start retrain completes.
 
 ## Known failure modes
 
 - Mid-trajectory motion blur: the model was trained on stationary cursors. Predictions during fast moves are stable but trail by a frame or two.
-- Cluttered icon grids: Photos / App Store grids occasionally produce a flat heatmap without a clear peak; gating on heatmap_peak ≥ 0.4 catches these.
-- Cursor at extreme corner (within 30 px of edge): subpixel refinement is unstable; rely on argmax integer coords.
+- Cluttered icon grids: Photos / App Store grids occasionally produce a flat heatmap without a clear peak; gating on `heatmap_peak ≥ 0.4` catches these.
+- Cursor at extreme corner: the stride-aware coord mapping covers the central ~native−7 px of each axis. Cursors in the outer ~7-px border can't be predicted exactly there. v0.7+ will add asymmetric border-parabolic refinement.
 
 ## Provenance
 
 - Trained on a single workstation with an NVIDIA RTX 5080 (16 GB VRAM), Ubuntu under WSL2 on Windows 11.
 - Repository: <https://github.com/ellyseum/ios_pointer_finder>
-- Tag: `v0.3.4`
+- Tag: `v0.6.0`
 - Trainer: Jocelyn Ellyse <jocelyn@ellyseum.dev>
-- Date: 2026-04-27
+- Date: 2026-04-30
 
 ## License
 

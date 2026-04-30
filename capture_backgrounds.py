@@ -70,12 +70,15 @@ def main() -> int:
     args = p.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    # resume from existing files
-    existing = sorted(glob.glob(os.path.join(args.out_dir, "bg-*.jpg")))
+    # Resume from existing files. The glob must match the suffix actually
+    # written below (`bg-NNNNN.png`); using `.jpg` here would silently leave
+    # `existing` empty on every restart, reset `saved` to 0, and overwrite
+    # prior captures while dropping the dedup-hash bootstrap.
+    existing = sorted(glob.glob(os.path.join(args.out_dir, "bg-*.png")))
     saved = 0
     if existing:
         try:
-            saved = int(os.path.basename(existing[-1]).removeprefix("bg-").removesuffix(".jpg")) + 1
+            saved = int(os.path.basename(existing[-1]).removeprefix("bg-").removesuffix(".png")) + 1
         except Exception:
             saved = len(existing)
     print(f"capture_backgrounds: out={args.out_dir} starting at idx {saved}")

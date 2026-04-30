@@ -15,6 +15,11 @@ pointer_model_*.config.json
 *.jpg
 *.jpeg
 
+# Whitelist: the captured iOS pointer sprite — runtime dependency of the
+# synthesizer (loaded by synthesize.py:_load_real_sprite). Ships with the
+# repo so users don't need an external download to regenerate the dataset.
+!sprites/at_dot.png
+
 # Generated training data — re-derive from backgrounds_kept/ via synthesize.py
 dataset/
 backgrounds/
@@ -53,3 +58,9 @@ htmlcov/
 # Local scratch
 *.swp
 *.tmp
+
+# Renamed v0.3 dataset (kept for ablation; do not commit images)
+dataset_v*/
+
+# Internal retrospective notes — not part of the OSS distribution
+reports/

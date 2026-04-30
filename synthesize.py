@@ -52,10 +52,9 @@ CURSOR_PX_MAX = 50
 CURSOR_ALPHA_PEAK = 0.25
 CURSOR_EDGE_FALLOFF = 0.10
 
-# Edge cases: reject if less than this fraction of the cursor sprite is
-# inside the image bounds (sliver-only is unusable training signal — the
-# model can't reliably localize a 5-pixel arc, and the visible-centroid
-# label gets dominated by the edge intersection geometry).
+# Edge cases: reject if less than this fraction of the cursor's *alpha mass*
+# (NOT bounding-box area) survives in-frame. Using box area overstates
+# visibility for soft-edged sprites with transparent corners.
 MIN_VISIBLE_FRAC = 0.20
 
 # Hard-negative decoy types
@@ -64,13 +63,52 @@ HARD_NEG_TYPES = ["wrong_size_disc", "wrong_alpha_disc", "ring",
 
 
 # ============================================================
-# Cursor sprite (the real-deal alpha mask)
+# Cursor sprite — captured from real iOS screen, with hotspot tracking
 # ============================================================
+
+# Path to the captured iOS Pointer-Control sprite (alpha-matted PNG).
+# Override with IPF_SPRITE_PATH if shipping a different capture.
+SPRITE_PATH = os.environ.get("IPF_SPRITE_PATH",
+                             os.path.join(ROOT, "sprites", "at_dot.png"))
+
+# Cached at module load — (alpha_float, hotspot_xy) at the source resolution.
+_REAL_SPRITE: tuple[np.ndarray, tuple[float, float]] | None = None
+
+
+def _load_real_sprite() -> tuple[np.ndarray, tuple[float, float]] | None:
+    """Load the captured iOS pointer sprite and compute its alpha-mass hotspot.
+
+    Returns (alpha[H, W] float32 in [0, 1], (hotspot_x, hotspot_y) in source
+    pixel coords). The hotspot is the alpha-weighted centroid — i.e. the click
+    anchor — which on the real iOS pointer differs from the geometric center
+    of the sprite tile by a few pixels. Labeling at the hotspot (not the
+    geometric center) eliminates a systematic supervision bias.
+    """
+    global _REAL_SPRITE
+    if _REAL_SPRITE is not None:
+        return _REAL_SPRITE
+    if not os.path.exists(SPRITE_PATH):
+        return None
+    img = cv2.imread(SPRITE_PATH, cv2.IMREAD_UNCHANGED)
+    if img is None or img.ndim != 3 or img.shape[2] != 4:
+        return None
+    alpha = img[:, :, 3].astype(np.float32) / 255.0
+    h, w = alpha.shape
+    yy, xx = np.indices((h, w), dtype=np.float32)
+    total = float(alpha.sum())
+    if total < 1e-6:
+        return None
+    hx = float((alpha * xx).sum() / total)
+    hy = float((alpha * yy).sum() / total)
+    _REAL_SPRITE = (alpha, (hx, hy))
+    return _REAL_SPRITE
+
 
 def make_pointer_mask(diameter: int = 46,
                      peak_alpha: float = CURSOR_ALPHA_PEAK,
                      edge_falloff: float = CURSOR_EDGE_FALLOFF) -> np.ndarray:
-    """Procedural anti-aliased disc — round, soft edges, no checkmark/text."""
+    """Procedural anti-aliased disc. Used as a fallback when the real sprite
+    can't be loaded, and for hard-negative decoy generation."""
     r = diameter / 2.0
     yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing='ij')
     cy = cx = (diameter - 1) / 2.0
@@ -79,6 +117,47 @@ def make_pointer_mask(diameter: int = 46,
     t = np.clip((r - dist) / (r - inner + 1e-6), 0.0, 1.0)
     alpha = t * t * (3.0 - 2.0 * t)  # smoothstep
     return (alpha * peak_alpha).astype(np.float32)
+
+
+def make_pointer_sprite(diameter: int) -> tuple[np.ndarray, tuple[float, float]]:
+    """Return (alpha, hotspot_local) for a cursor at the requested diameter.
+
+    Prefers the captured real sprite (resized via INTER_LINEAR); falls back to
+    a procedural disc whose hotspot is the geometric center.
+
+    `hotspot_local` is in sprite-local pixel coords: it is the click anchor
+    relative to the sprite's top-left, NOT relative to the geometric center.
+    Caller computes image-space label as `sprite_top_left + hotspot_local`.
+    """
+    real = _load_real_sprite()
+    if real is None:
+        alpha = make_pointer_mask(diameter=diameter)
+        c = (diameter - 1) / 2.0
+        return alpha, (c, c)
+    src_alpha, _ = real
+    # Resize to target diameter (square).
+    resized = cv2.resize(src_alpha, (diameter, diameter),
+                        interpolation=cv2.INTER_LINEAR)
+    # Renormalize peak to match CURSOR_ALPHA_PEAK so the contrast math in
+    # pick_cursor_color() stays correct against the legacy reference. Scale
+    # by the RESIZED peak (not src_peak) — INTER_LINEAR resampling drops the
+    # peak slightly, so scaling by source max would leave the resized peak
+    # at ~0.227 instead of 0.25.
+    resized_peak = float(resized.max())
+    if resized_peak > 1e-6:
+        resized = resized * (CURSOR_ALPHA_PEAK / resized_peak)
+    resized = np.clip(resized, 0.0, 1.0).astype(np.float32)
+    # Hotspot = alpha-mass centroid of the RESIZED sprite (NOT the source-
+    # coords scaling). INTER_LINEAR doesn't perfectly preserve centroid
+    # under resampling, so use the actual centroid of what we'll composite.
+    yy, xx = np.indices(resized.shape, dtype=np.float32)
+    total = float(resized.sum())
+    if total > 1e-6:
+        hx = float((resized * xx).sum() / total)
+        hy = float((resized * yy).sum() / total)
+    else:
+        hx = hy = (diameter - 1) / 2.0
+    return resized, (hx, hy)
 
 
 # ============================================================
@@ -245,17 +324,45 @@ def composite(bg: np.ndarray, sprite_alpha: np.ndarray, cx: int, cy: int,
     return bg, visible_px
 
 
-def visible_centroid(cx: int, cy: int, sw: int, sh: int) -> tuple[int, int]:
-    """Bounding-box centroid of the visible portion of a sprite. Used as the
-    label for edge-clipped cursors so the heatmap target is centered on
-    where the cursor actually appears in the image."""
-    x0 = cx - sw // 2; y0 = cy - sh // 2
-    x1 = x0 + sw; y1 = y0 + sh
-    bx0 = max(0, x0); by0 = max(0, y0)
-    bx1 = min(W, x1); by1 = min(H, y1)
-    cx_v = (bx0 + bx1 - 1) // 2
-    cy_v = (by0 + by1 - 1) // 2
-    return cx_v, cy_v
+def visible_alpha_centroid(sprite_alpha: np.ndarray, cx_geom: int, cy_geom: int
+                          ) -> tuple[float, float, float]:
+    """Compute the alpha-mass centroid of the *visible* portion of a sprite
+    placed at geometric center (cx_geom, cy_geom) in image coords, plus the
+    fraction of total alpha mass that survived the in-frame clip.
+
+    Returns (label_x, label_y, visible_frac). Coordinates are floats — the
+    centroid is a fractional pixel by construction, and downstream training
+    is float-aware (v0.4 fix).
+    """
+    sh, sw = sprite_alpha.shape
+    # Unclipped sprite bbox in image coords (anchored on geometric center).
+    x0 = cx_geom - sw // 2
+    y0 = cy_geom - sh // 2
+    x1 = x0 + sw
+    y1 = y0 + sh
+    # Clamp to frame.
+    px0 = max(0, x0); py0 = max(0, y0)
+    px1 = min(W, x1); py1 = min(H, y1)
+    if px0 >= px1 or py0 >= py1:
+        return float(cx_geom), float(cy_geom), 0.0
+    # Sprite-local indices of the visible region.
+    sx0 = px0 - x0; sy0 = py0 - y0
+    sx1 = sx0 + (px1 - px0); sy1 = sy0 + (py1 - py0)
+    visible = sprite_alpha[sy0:sy1, sx0:sx1]
+    visible_mass = float(visible.sum())
+    total_mass = float(sprite_alpha.sum())
+    visible_frac = visible_mass / max(1e-6, total_mass)
+    if visible_mass < 1e-6:
+        # Degenerate (all-transparent overlap region) — bail out with the
+        # geometric-center label so caller can still decide via visible_frac.
+        return float(cx_geom), float(cy_geom), visible_frac
+    yy = np.arange(sy0, sy1, dtype=np.float32)[:, None]
+    xx = np.arange(sx0, sx1, dtype=np.float32)[None, :]
+    cy_local = float((visible * yy).sum() / visible_mass)
+    cx_local = float((visible * xx).sum() / visible_mass)
+    label_x = float(x0) + cx_local
+    label_y = float(y0) + cy_local
+    return label_x, label_y, visible_frac
 
 
 def augment(img: np.ndarray) -> np.ndarray:
@@ -279,57 +386,72 @@ def augment(img: np.ndarray) -> np.ndarray:
 # ============================================================
 
 def gen_normal_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
-    cx = random.randint(margin, W - margin)
-    cy = random.randint(margin, H - margin)
+    """Full-cursor positive. Label is the alpha-centroid (click anchor),
+    NOT the geometric center of the sprite tile — these differ on the real
+    iOS pointer by ~1 px in x and ~3 px in y at native resolution."""
+    cx_geom = random.randint(margin, W - margin)
+    cy_geom = random.randint(margin, H - margin)
     diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
-    sprite_alpha = make_pointer_mask(diameter=diameter)
+    sprite_alpha, hotspot_local = make_pointer_sprite(diameter)
     ph, pw = sprite_alpha.shape
-    py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
+    label_x = float(cx_geom - pw // 2) + hotspot_local[0]
+    label_y = float(cy_geom - ph // 2) + hotspot_local[1]
+    py0 = max(0, cy_geom - ph // 2); px0 = max(0, cx_geom - pw // 2)
     py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
     bg_patch = bg_orig[py0:py1, px0:px1]
     color = pick_cursor_color(bg_patch)
     bg = bg_orig.copy()
-    bg, _vis = composite(bg, sprite_alpha, cx, cy, color)
+    bg, _vis = composite(bg, sprite_alpha, cx_geom, cy_geom, color)
     return augment(bg), {
-        "x": cx, "y": cy, "has_cursor": 1, "sample_type": "normal_pos",
+        "x": label_x, "y": label_y, "has_cursor": 1, "sample_type": "normal_pos",
         "lum_under": round(luminance(bg_patch), 1),
         "cursor_v": color[0], "diameter": diameter,
+        # Persist hotspot so train-time crop can use asymmetric sprite-bbox
+        # protection (sprite extends [label-hx, label+(d-hx)] × [label-hy,
+        # label+(d-hy)], NOT a symmetric radius around the label — the iOS
+        # pointer's alpha mass is biased toward the upper-left of its tile).
+        "hotspot_x": float(hotspot_local[0]), "hotspot_y": float(hotspot_local[1]),
     }
 
 
 def gen_edge_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict] | None:
-    """Edge-clipped cursor; returns None if visible fraction < MIN_VISIBLE_FRAC."""
+    """Edge-clipped cursor. Returns None if visible alpha-mass fraction
+    (NOT bounding-box fraction) is below MIN_VISIBLE_FRAC. Label is the
+    alpha-centroid of the visible portion — the click anchor projected
+    onto whatever pixels survived the clip."""
     edge = random.choice(['left', 'right', 'top', 'bottom'])
     diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
     r = diameter // 2
     edge_offset = random.randint(-r - 3, max(0, margin // 2))
     if edge == 'left':
-        cx = edge_offset; cy = random.randint(margin, H - margin)
+        cx_geom = edge_offset; cy_geom = random.randint(margin, H - margin)
     elif edge == 'right':
-        cx = W - 1 - edge_offset; cy = random.randint(margin, H - margin)
+        cx_geom = W - 1 - edge_offset; cy_geom = random.randint(margin, H - margin)
     elif edge == 'top':
-        cx = random.randint(margin, W - margin); cy = edge_offset
+        cx_geom = random.randint(margin, W - margin); cy_geom = edge_offset
     else:
-        cx = random.randint(margin, W - margin); cy = H - 1 - edge_offset
+        cx_geom = random.randint(margin, W - margin); cy_geom = H - 1 - edge_offset
 
-    sprite_alpha = make_pointer_mask(diameter=diameter)
+    sprite_alpha, _hotspot = make_pointer_sprite(diameter)
     ph, pw = sprite_alpha.shape
-    sprite_area = ph * pw
-    py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
+    label_x, label_y, visible_frac = visible_alpha_centroid(
+        sprite_alpha, cx_geom, cy_geom)
+    if visible_frac < MIN_VISIBLE_FRAC:
+        return None
+    py0 = max(0, cy_geom - ph // 2); px0 = max(0, cx_geom - pw // 2)
     py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
-    visible_area = max(0, (py1 - py0)) * max(0, (px1 - px0))
-    if visible_area < MIN_VISIBLE_FRAC * sprite_area:
+    if py0 >= py1 or px0 >= px1:
         return None
     bg_patch = bg_orig[py0:py1, px0:px1]
     color = pick_cursor_color(bg_patch)
     bg = bg_orig.copy()
-    bg, _vis = composite(bg, sprite_alpha, cx, cy, color)
-    label_x, label_y = visible_centroid(cx, cy, pw, ph)
+    bg, _vis = composite(bg, sprite_alpha, cx_geom, cy_geom, color)
     return augment(bg), {
         "x": label_x, "y": label_y, "has_cursor": 1, "sample_type": "edge_pos",
         "lum_under": round(luminance(bg_patch), 1),
         "cursor_v": color[0], "diameter": diameter, "edge": edge,
-        "true_center": [cx, cy], "visible_frac": round(visible_area / sprite_area, 3),
+        "geometric_center": [cx_geom, cy_geom],
+        "visible_frac": round(visible_frac, 3),
     }
 
 
@@ -341,14 +463,23 @@ def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     ph, pw = sprite.shape
     cx = random.randint(margin, W - margin)
     cy = random.randint(margin, H - margin)
-    bg_patch = bg_orig[max(0, cy - ph // 2):min(H, cy + ph // 2),
-                       max(0, cx - pw // 2):min(W, cx + pw // 2)]
+    # Match gen_normal_pos's `py0:py0+ph` patch convention; `cy ± ph // 2`
+    # truncates one row/col on odd-height decoys (ibeam, ring), biasing
+    # pick_cursor_color by a sub-pixel luminance drift.
+    py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
+    py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
+    bg_patch = bg_orig[py0:py1, px0:px1]
     color = pick_cursor_color(bg_patch)
     bg = bg_orig.copy()
     bg, _vis = composite(bg, sprite, cx, cy, color)
+    # Persist decoy size so the train-time crop sampler can protect the
+    # decoy footprint. Without this, hard_neg crops can clip large decoys
+    # and turn "edge-clipped cursor-like blob = negative" into supervision
+    # that directly contradicts edge_pos's "clipped cursor = positive".
     return augment(bg), {
         "x": -1, "y": -1, "has_cursor": 0, "sample_type": "hard_neg",
         "decoy_type": decoy_type, "decoy_pos": [cx, cy],
+        "decoy_w": pw, "decoy_h": ph,
     }
 
 

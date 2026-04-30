@@ -49,17 +49,25 @@ def preprocess(img_bgr: np.ndarray) -> torch.Tensor:
 
 
 def hard_argmax_xy(hm_logits: torch.Tensor) -> tuple[float, float, float]:
-    """argmax of raw heatmap logits. Returns (x_norm, y_norm, peak_logit).
-    More robust than soft-argmax when the heatmap is broad/multi-modal.
+    """argmax + parabolic-on-logits + stride-aware decode. Returns
+    (x_norm, y_norm, peak_logit) where x_norm/y_norm are the predicted
+    NORMALIZED native coords (still in [0, 1]) — caller multiplies by
+    NATIVE_W/H. v0.5.1: matches inference.py decode exactly.
     """
-    B, _, H, W = hm_logits.shape
-    flat = hm_logits.view(B, H * W)
-    peak_logit, idx = flat.max(dim=1)
-    iy = (idx // W).float()
-    ix = (idx % W).float()
-    x_norm = (ix / max(1, W - 1)).item()
-    y_norm = (iy / max(1, H - 1)).item()
-    return x_norm, y_norm, peak_logit.item()
+    from inference import _parabolic_offset
+    logits = hm_logits[0, 0].cpu().numpy()
+    H, W = logits.shape
+    flat = int(logits.argmax())
+    iy, ix = flat // W, flat % W
+    rx = float(ix) + _parabolic_offset(logits, ix, iy, axis="x")
+    ry = float(iy) + _parabolic_offset(logits, ix, iy, axis="y")
+    stride_x = NATIVE_W / W
+    stride_y = NATIVE_H / H
+    rx_native = rx * stride_x + (stride_x - 1.0) / 2.0
+    ry_native = ry * stride_y + (stride_y - 1.0) / 2.0
+    x_norm = max(0.0, min(1.0, rx_native / NATIVE_W))
+    y_norm = max(0.0, min(1.0, ry_native / NATIVE_H))
+    return x_norm, y_norm, float(logits[iy, ix])
 
 
 def heatmap_overlay(img_native: np.ndarray, hm_prob: np.ndarray) -> np.ndarray:
@@ -71,26 +79,23 @@ def heatmap_overlay(img_native: np.ndarray, hm_prob: np.ndarray) -> np.ndarray:
     return cv2.addWeighted(img_native, 0.6, cm, 0.4, 0)
 
 
-def annotate(img: np.ndarray, pred_soft_xy: tuple[int, int],
+def annotate(img: np.ndarray,
              pred_hard_xy: tuple[int, int], gt_xy: tuple[int, int] | None,
              conf: float, peak_logit: float) -> np.ndarray:
-    """Draw markers and labels on a copy of img."""
+    """Draw markers and labels on a copy of img.
+    v0.5.1: soft-argmax marker dropped (forward no longer computes pred_xy)."""
     out = img.copy()
     # Pred (hard argmax) — green circle, prominent
     cv2.circle(out, pred_hard_xy, 30, (0, 255, 0), 3)
     cv2.putText(out, f"argmax", (pred_hard_xy[0] + 35, pred_hard_xy[1] - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-    # Pred (soft-argmax) — yellow circle, secondary
-    cv2.circle(out, pred_soft_xy, 22, (0, 220, 220), 2)
-    cv2.putText(out, f"soft", (pred_soft_xy[0] + 25, pred_soft_xy[1] + 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 220), 2)
     # GT — blue circle if known
     if gt_xy is not None:
         cv2.circle(out, gt_xy, 25, (255, 100, 0), 3)
         cv2.putText(out, f"GT", (gt_xy[0] - 80, gt_xy[1] - 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 100, 0), 2)
     # Header bar
-    info = f"conf={conf:.3f}  hm_peak_logit={peak_logit:.2f}  hard={pred_hard_xy}  soft={pred_soft_xy}"
+    info = f"conf={conf:.3f}  hm_peak_logit={peak_logit:.2f}  hard={pred_hard_xy}"
     if gt_xy is not None:
         err = np.hypot(pred_hard_xy[0] - gt_xy[0], pred_hard_xy[1] - gt_xy[1])
         info += f"  err={err:.0f}px"
@@ -121,7 +126,7 @@ def main() -> int:
     frames = sorted(glob.glob(os.path.join(args.test_dir, "*.png")))
     print(f"frames: {len(frames)}\n")
 
-    print(f"{'frame':<18}  {'conf':>6}  {'hm_pk':>6}  {'hard_xy':>14}  {'soft_xy':>14}  {'gt_xy':>14}  {'err':>5}")
+    print(f"{'frame':<18}  {'conf':>6}  {'hm_pk':>6}  {'hard_xy':>14}  {'gt_xy':>14}  {'err':>5}")
     print("-" * 100)
 
     for fp in frames:
@@ -131,12 +136,10 @@ def main() -> int:
             continue
         x = preprocess(img).to(device)
         with torch.no_grad():
-            pred_xy, pred_conf_logit, pred_hm = model(x)
+            pred_conf_logit, pred_hm = model(x)  # v0.5.1: 2-tuple
         conf = torch.sigmoid(pred_conf_logit).item()
-        soft_xn, soft_yn = pred_xy[0].cpu().tolist()
         hard_xn, hard_yn, peak_logit = hard_argmax_xy(pred_hm)
 
-        soft_xy = (int(round(soft_xn * NATIVE_W)), int(round(soft_yn * NATIVE_H)))
         hard_xy = (int(round(hard_xn * NATIVE_W)), int(round(hard_yn * NATIVE_H)))
         name = os.path.basename(fp)
         gt = GT.get(name)
@@ -144,12 +147,12 @@ def main() -> int:
         if gt is not None:
             err = np.hypot(hard_xy[0] - gt[0], hard_xy[1] - gt[1])
             err_str = f"{err:.0f}"
-        print(f"{name:<18}  {conf:>6.3f}  {peak_logit:>6.2f}  {str(hard_xy):>14}  {str(soft_xy):>14}  {str(gt):>14}  {err_str:>5}")
+        print(f"{name:<18}  {conf:>6.3f}  {peak_logit:>6.2f}  {str(hard_xy):>14}  {str(gt):>14}  {err_str:>5}")
 
         # Visualizations
         hm_prob = torch.sigmoid(pred_hm)[0, 0].cpu().numpy()  # (H', W') in [0,1]
         overlay = heatmap_overlay(img, hm_prob)
-        annotated = annotate(img, soft_xy, hard_xy, gt, conf, peak_logit)
+        annotated = annotate(img, hard_xy, gt, conf, peak_logit)
         # Side-by-side: annotated original | heatmap overlay
         sxs = np.hstack([annotated, overlay])
         # Half-resolution for easier viewing on Windows

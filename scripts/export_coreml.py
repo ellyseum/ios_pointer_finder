@@ -41,8 +41,10 @@ def export(weights: Path, out: Path) -> Path:
     mlmodel = ct.convert(
         traced,
         inputs=[ct.TensorType(name="image", shape=dummy.shape, dtype=ct.TensorType.float32)],
+        # v0.5.1: dropped "xy" output — see CHANGELOG. PointerNet.forward now
+        # returns (conf_logit, heatmap_logits); decode argmax+parabolic on the
+        # heatmap externally (or via inference.PointerFinder).
         outputs=[
-            ct.TensorType(name="xy"),
             ct.TensorType(name="conf"),
             ct.TensorType(name="heatmap"),
         ],

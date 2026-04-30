@@ -2,6 +2,35 @@
 
 All notable changes to ios_pointer_finder are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning per `bump.sh` policy (see `CONTRIBUTING.md`).
 
+## [0.5.1] - Unreleased
+
+### Changed (BREAKING)
+- `PointerNet.forward` now returns `(conf_logit, heatmap)` instead of `(xy, conf_logit, heatmap)`. The soft-argmax `xy` head was unused (XY_WEIGHT=0 since v0.5) and used a different coordinate convention than the deployed inference path. Decoders should use `inference.PointerFinder.predict()` (or argmax + parabolic on raw logits) to recover `(x, y)`.
+- Exported `.onnx` / `.mlpackage` artifacts no longer carry an `xy` output. Downstream consumers binding by name must update.
+
+### Added
+- Stride-aware coordinate mapping in target generation, training validation, and inference (replaces linear-stretch).
+- Parabolic subpixel refinement on raw heatmap logits (not sigmoid output).
+- Real iOS pointer sprite (`sprites/at_dot.png`) with alpha-centroid labeling; replaces procedural smoothstep disc.
+- Asymmetric crop protection in train-time augmentation (true sprite bbox around hotspot).
+- Cursor-safe crop also protects hard-negative decoy footprints via persisted `decoy_w`/`decoy_h`.
+- `.safetensors` resume + save with `<stem>.config.json` sidecar metadata.
+- `--limit-val N` flag for fast regression smoke (shuffle-then-slice).
+- DataLoader `worker_init_fn` to break Python `random` / numpy RNG state correlation across workers.
+- `set -o pipefail` in `train_continuous.sh` so `train.py` crashes don't get swallowed by `tee`.
+
+### Fixed
+- `gen_edge_pos` visible_frac is alpha-mass-based, not bounding-box area.
+- `gen_hard_neg` color patch off-by-one on odd-height decoys.
+- `capture_backgrounds.py` resume glob (was `bg-*.jpg`, now `bg-*.png` matching write path).
+- Legacy negs (`sample_type` missing) now route correctly to neg-FPR in val metrics.
+- H-flip disabled for positives (real sprite is left-right asymmetric).
+
+### Removed
+- `val_soft_err_px` from training logs and saved checkpoints.
+- `XY_WEIGHT_*` constants and the soft-argmax head from `PointerNet.forward`.
+- Soft-argmax marker in `test_real.py` visualizations.
+
 ## [Unreleased]
 
 ### Added

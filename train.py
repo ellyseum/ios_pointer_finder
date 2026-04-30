@@ -39,6 +39,36 @@ WEIGHTS_PATH = os.path.join(ROOT, "pointer_model.pt")
 VERSION_PATH = os.path.join(ROOT, "VERSION")
 
 
+def save_checkpoint(ckpt: dict, path: str) -> None:
+    """Suffix-aware checkpoint save. Pickle `.pt` OR safetensors + sidecar.
+
+    For `.safetensors` paths, splits the dict into:
+      - tensor weights → safetensors file
+      - metadata (epoch, val_pos_err_px, etc.) → `<stem>.config.json` sidecar
+        (matches `inference._load_sidecar_config` and
+        `scripts/convert_pt_to_safetensors.py`).
+
+    For all other suffixes (default `.pt`), uses `torch.save` (pickle).
+    """
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix == ".safetensors":
+        try:
+            from safetensors.torch import save_file
+        except ImportError as e:
+            raise SystemExit(
+                "Saving .safetensors needs `pip install safetensors`."
+            ) from e
+        save_file(ckpt["model"], path)
+        sidecar = os.path.splitext(path)[0] + ".config.json"
+        meta = {k: v for k, v in ckpt.items() if k != "model"}
+        # JSON can't serialize tuples → list; numpy/torch scalars stay as-is.
+        meta = {k: list(v) if isinstance(v, tuple) else v for k, v in meta.items()}
+        with open(sidecar, "w") as f:
+            json.dump(meta, f, indent=2)
+    else:
+        torch.save(ckpt, path)
+
+
 def read_version() -> str:
     """Read semver from the VERSION file at repo root. Used to tag saved
     checkpoints so old versions are never overwritten by future training runs.
@@ -108,54 +138,122 @@ class PointerDataset(Dataset):
 
     def _apply_train_augment(self, img_native: np.ndarray, e: dict) -> tuple[np.ndarray, dict]:
         """Train-time augmentation that preserves cursor labels.
-        - Random crop ~7% (each axis) before resize: forces spatial invariance,
-          breaks "this exact pixel pattern means cursor at X" memorization.
-        - Random horizontal flip 50%: doubles effective bg variety; cursor sprite
-          is rotationally symmetric so just mirror x label.
-        - Photometric jitter (brightness, optional small noise): redirects the
-          model away from JPEG-noise memorization that bakes into the static
-          dataset.
-        Returns (cropped_image, modified_label_dict). Label dict has updated
-        (x, y) and possibly downgraded has_cursor=0 if cursor cropped out."""
+
+        v0.5.1 changes:
+        - #12 asymmetric crop: protected region is the actual sprite bbox
+          around the hotspot, not a symmetric radius around the label.
+          Sprite top-left = label - hotspot; bottom-right = label + (d - hotspot).
+          The captured iOS pointer's hotspot is in the upper-left quadrant,
+          so the symmetric guard left the sprite bottom-right unprotected.
+        - #15 disable H-flip on positives: real captured sprite is left-right
+          asymmetric (~31% alpha asymmetry). Flipping shows the model a
+          mirrored shape that doesn't exist at inference. Negs still flip.
+        - #21 hard_neg crop now respects decoy footprint via persisted
+          decoy_w/decoy_h (synthesize.py:gen_hard_neg). Worst-case decoy
+          is `make_decoy_ellipse` at 119px wide; MAX_DECOY_EXTENT=120
+          provides slack for any per-sample-extent fallback.
+        - #28 fallback: when 8 trials exhaust, fall back to no-crop AND
+          skip the flip+brightness on positives only (don't compound a
+          fallback-cropped state with risky augmentation). Negs continue
+          to flip+brightness on the no-crop path.
+        """
         h, w = img_native.shape[:2]
-        # Random crop window: keep at least 93% of each axis
         max_crop_x = int(w * 0.07)
         max_crop_y = int(h * 0.07)
-        crop_x0 = random.randint(0, max_crop_x)
-        crop_y0 = random.randint(0, max_crop_y)
-        crop_x1 = w - random.randint(0, max_crop_x)
-        crop_y1 = h - random.randint(0, max_crop_y)
+
+        is_pos = bool(e["has_cursor"])
+        is_edge_pos = is_pos and e.get("sample_type") == "edge_pos"
+        is_hard_neg = (not is_pos) and e.get("sample_type") == "hard_neg"
+
+        # Default crop window: full frame. Track whether we found a real crop.
+        crop_x0, crop_y0 = 0, 0
+        crop_x1, crop_y1 = w, h
+        found_safe_crop = False
+
+        if is_edge_pos:
+            # edge_pos cursors sit on the frame boundary; further cropping
+            # adds another clip we'd have to re-label. Skip the crop.
+            pass
+        elif is_pos:
+            # Asymmetric protection around hotspot (#12). For a sprite of
+            # size d×d placed with top-left at (label - hotspot), the bbox
+            # extends [label_x - hx, label_x + (d - hx)] × [label_y - hy, ...].
+            # Hotspot defaults to geometric center (d/2) when label dict
+            # doesn't carry the actual hotspot — fallback for legacy data.
+            d = int(e.get("diameter", 46))
+            hx = float(e.get("hotspot_x", d / 2.0))
+            hy = float(e.get("hotspot_y", d / 2.0))
+            ax = float(e["x"]); ay = float(e["y"])
+            margin = 2  # px slack
+            req_l = ax - hx - margin; req_r = ax + (d - hx) + margin
+            req_t = ay - hy - margin; req_b = ay + (d - hy) + margin
+            for _ in range(8):
+                c_x0 = random.randint(0, max_crop_x)
+                c_y0 = random.randint(0, max_crop_y)
+                c_x1 = w - random.randint(0, max_crop_x)
+                c_y1 = h - random.randint(0, max_crop_y)
+                if (c_x0 <= req_l and req_r <= c_x1
+                        and c_y0 <= req_t and req_b <= c_y1):
+                    crop_x0, crop_y0, crop_x1, crop_y1 = c_x0, c_y0, c_x1, c_y1
+                    found_safe_crop = True
+                    break
+        elif is_hard_neg:
+            # #21: protect the decoy footprint using persisted size, with
+            # MAX_DECOY_EXTENT as the worst-case fallback for legacy data.
+            MAX_DECOY_EXTENT = 120
+            dpos = e.get("decoy_pos", [w // 2, h // 2])
+            dx, dy = float(dpos[0]), float(dpos[1])
+            dw = int(e.get("decoy_w", MAX_DECOY_EXTENT))
+            dh = int(e.get("decoy_h", MAX_DECOY_EXTENT))
+            req_l = dx - dw / 2.0 - 2; req_r = dx + dw / 2.0 + 2
+            req_t = dy - dh / 2.0 - 2; req_b = dy + dh / 2.0 + 2
+            for _ in range(8):
+                c_x0 = random.randint(0, max_crop_x)
+                c_y0 = random.randint(0, max_crop_y)
+                c_x1 = w - random.randint(0, max_crop_x)
+                c_y1 = h - random.randint(0, max_crop_y)
+                if (c_x0 <= req_l and req_r <= c_x1
+                        and c_y0 <= req_t and req_b <= c_y1):
+                    crop_x0, crop_y0, crop_x1, crop_y1 = c_x0, c_y0, c_x1, c_y1
+                    found_safe_crop = True
+                    break
+        else:
+            # plain_neg — no decoy to preserve, free crop.
+            crop_x0 = random.randint(0, max_crop_x)
+            crop_y0 = random.randint(0, max_crop_y)
+            crop_x1 = w - random.randint(0, max_crop_x)
+            crop_y1 = h - random.randint(0, max_crop_y)
+            found_safe_crop = True
+
         img = img_native[crop_y0:crop_y1, crop_x0:crop_x1]
         crop_w = crop_x1 - crop_x0
         crop_h = crop_y1 - crop_y0
 
         new_label = dict(e)
-        if e["has_cursor"]:
-            x_in_crop = e["x"] - crop_x0
-            y_in_crop = e["y"] - crop_y0
-            if (x_in_crop < 0 or x_in_crop >= crop_w
-                    or y_in_crop < 0 or y_in_crop >= crop_h):
-                # cursor was cropped out — relabel as negative
-                new_label["has_cursor"] = 0
-                new_label["x"] = -1
-                new_label["y"] = -1
-            else:
-                new_label["x"] = x_in_crop
-                new_label["y"] = y_in_crop
+        if is_pos:
+            new_label["x"] = float(e["x"]) - crop_x0
+            new_label["y"] = float(e["y"]) - crop_y0
 
-        # Horizontal flip (cursor is symmetric — just mirror x)
-        if random.random() < 0.5:
+        # #28: skip flip+brightness on positive fallback path. Negs still augment.
+        skip_aug_on_fallback = is_pos and not found_safe_crop and not is_edge_pos
+
+        # #15: disable H-flip on positives entirely (real sprite is asymmetric).
+        # Negs still flip — bg flip is fine, decoy shapes don't have an
+        # orientation to teach.
+        if (not skip_aug_on_fallback) and (not is_pos) and random.random() < 0.5:
             img = img[:, ::-1].copy()
-            if new_label["has_cursor"]:
-                new_label["x"] = crop_w - 1 - new_label["x"]
+            # Negs have no x label to mirror.
 
         # Photometric: brightness jitter (mild — synth already has ±15% baked).
         # cv2.convertScaleAbs is C-implemented and ~10x faster than the
         # np.float32 round-trip approach we used in the slow first build of
         # v0.3.1 (28 min/epoch). Now ~6 min/epoch.
-        b = random.uniform(0.92, 1.08)
-        if abs(b - 1.0) > 0.005:
-            img = cv2.convertScaleAbs(img, alpha=b)
+        # #28: skip on the positive fallback path so we don't compound an
+        # already-degraded augmentation choice.
+        if not skip_aug_on_fallback:
+            b = random.uniform(0.92, 1.08)
+            if abs(b - 1.0) > 0.005:
+                img = cv2.convertScaleAbs(img, alpha=b)
 
         # Now resize the crop to TRAIN_W x TRAIN_H. Update label scaling so
         # x/y are still in NATIVE-pixel space (caller divides by NATIVE_W/H).
@@ -235,19 +333,36 @@ class PointerNet(nn.Module):
         )
 
     def forward(self, x):
+        # Returns (conf_logit, heatmap_logits). The earlier soft-argmax `xy`
+        # output was dropped: it was weighted at 0 in the loss (kept around
+        # for back-compat) but cost a softmax over the full heatmap each
+        # forward AND used a linear-stretch coordinate convention while the
+        # heatmap target used a stride convention — different objectives.
+        # Inference path: hard argmax + parabolic refinement on raw logits
+        # (`heatmap_to_xy_px`, `inference._parabolic_offset`).
         feat = self.backbone(x)          # (B, 128, H', W')
         hm = self.heatmap_head(feat)     # (B, 1, H', W') — raw logits
-        # Soft-argmax for inference (still differentiable, used as secondary signal)
-        B, _, H, W = hm.shape
-        flat = hm.view(B, H * W)
-        prob = F.softmax(flat, dim=1).view(B, 1, H, W)
-        ys = torch.linspace(0, 1, steps=H, device=hm.device).view(1, 1, H, 1)
-        xs = torch.linspace(0, 1, steps=W, device=hm.device).view(1, 1, 1, W)
-        ex = (prob * xs).sum(dim=(2, 3))
-        ey = (prob * ys).sum(dim=(2, 3))
-        xy = torch.cat([ex, ey], dim=1)
         conf_logit = self.conf_head(feat).squeeze(1)
-        return xy, conf_logit, hm  # hm is raw logits — used directly for heatmap MSE loss
+        return conf_logit, hm
+
+
+def native_to_cell(x_native: torch.Tensor, hm_dim: int, native_dim: int) -> torch.Tensor:
+    """Map native-pixel coords to heatmap-cell coords, using the conv-stride
+    convention that cell `i` has receptive-field center at native pixel
+    `i*stride + (stride-1)/2`, where `stride = native_dim / hm_dim`.
+
+    This replaces the v0.4 linear-stretch formula `x/(native-1) * (hm-1)`,
+    which mapped cell 0 → native 0 and cell (hm-1) → native (native-1) and
+    forced the model to learn a non-uniform spatial warp to compensate.
+    """
+    stride = native_dim / hm_dim
+    return (x_native - (stride - 1.0) / 2.0) / stride
+
+
+def cell_to_native(cell: torch.Tensor, hm_dim: int, native_dim: int) -> torch.Tensor:
+    """Inverse of native_to_cell. Used to decode heatmap argmax → native px."""
+    stride = native_dim / hm_dim
+    return cell * stride + (stride - 1.0) / 2.0
 
 
 def heatmap_to_xy_px(hm_logits: torch.Tensor, native_w: int, native_h: int) -> torch.Tensor:
@@ -257,18 +372,19 @@ def heatmap_to_xy_px(hm_logits: torch.Tensor, native_w: int, native_h: int) -> t
     native pixel coordinates. Mirrors `inference.py:_parabolic_offset` + the
     coordinate mapping in `predict()`.
 
-    Used at validation time so val_pos_err measures the same path inference uses.
+    v0.5: parabolic fit applied directly to RAW LOGITS, not sigmoid output.
+    The training target is a Gaussian `exp(-d²/2σ²)`; logit(target) ≈ -d²/2σ²
+    near the peak, which is parabolic in `d`. Fitting a parabola to the
+    sigmoid suffers saturation bias near the peak (where sigmoid → 1 and the
+    second derivative collapses), suppressing the subpixel offset toward 0.
     """
-    hm = torch.sigmoid(hm_logits)[:, 0]  # (B, H, W)
+    hm = hm_logits[:, 0]  # (B, H, W) RAW logits — see v0.5 note above
     B, H, W = hm.shape
     flat = hm.view(B, -1).argmax(dim=1)
     ix = flat % W
     iy = flat // W
 
     # Parabolic offset along x (zero on horizontal borders or flat fits).
-    # The denominator (a - 2b + c) is NEGATIVE for a normal concave-down peak,
-    # so we cannot clamp_min: divide by sign-preserving abs-clamped denom and
-    # mask out near-zero denominators after.
     can_x = (ix > 0) & (ix < W - 1)
     bidx = torch.arange(B, device=hm.device)
     ax = hm[bidx, iy, (ix - 1).clamp(min=0)]
@@ -295,27 +411,34 @@ def heatmap_to_xy_px(hm_logits: torch.Tensor, native_w: int, native_h: int) -> t
 
     rx = ix.float() + off_x
     ry = iy.float() + off_y
-    # Match inference.py:244 — round to int before clamping so val_pos_err
-    # measures the same discrete output users see, not the continuous pre-
-    # rounding signal (~0.71 px optimistic on average).
-    cx_px = (rx / max(1, W - 1) * native_w).round().clamp(0, native_w - 1)
-    cy_px = (ry / max(1, H - 1) * native_h).round().clamp(0, native_h - 1)
+    # v0.5: stride-aware cell→native mapping (replaces v0.4 linear stretch).
+    cx_px = cell_to_native(rx, W, native_w).round().clamp(0, native_w - 1)
+    cy_px = cell_to_native(ry, H, native_h).round().clamp(0, native_h - 1)
     return torch.stack([cx_px, cy_px], dim=1)
 
 
 def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
-                        sigma_px: float = 2.0) -> torch.Tensor:
+                        sigma_px: float = 1.25) -> torch.Tensor:
     """
     Build (B, 1, H', W') Gaussian target heatmap centered at each (x_norm, y_norm).
-    sigma_px = stddev in heatmap pixel units. Cursor is ~46 native px = ~3 px
-    in feature map at 1/16 resolution, so sigma=2.0 gives a peak slightly
-    wider than the cursor itself — enough gradient signal without training
-    diffuse predictions. (sigma=4.0 trains a too-broad target.)
+    `target_xy_norm` is (x/NATIVE_W, y/NATIVE_H) — the caller owns native-px
+    coords; this function maps native → cell using the v0.5 stride convention.
+
+    sigma_px = stddev in heatmap-cell units. v0.5 default 1.25 (was 2.0):
+      - hm cell ≈ 16 native px (stride 16 from native to feature map)
+      - sigma_px = 1.25 → 20 native-px stddev → FWHM ≈ 47 native px ≈ cursor
+        diameter. Previous 2.0 gave FWHM ~75 px (1.6× cursor) — too diffuse
+        to enforce sub-cursor-radius precision.
     """
     B = target_xy_norm.shape[0]
     device = target_xy_norm.device
-    cx = target_xy_norm[:, 0] * (hm_w - 1)
-    cy = target_xy_norm[:, 1] * (hm_h - 1)
+    # Recover native-px coords, then map to cells via stride convention.
+    # We accept the slight redundancy (x_norm * native = native_x; native_x →
+    # cell) for clarity over collapsing into a single hidden formula.
+    x_native = target_xy_norm[:, 0] * NATIVE_W
+    y_native = target_xy_norm[:, 1] * NATIVE_H
+    cx = native_to_cell(x_native, hm_w, NATIVE_W)
+    cy = native_to_cell(y_native, hm_h, NATIVE_H)
     yy = torch.arange(hm_h, device=device, dtype=torch.float32).view(1, hm_h, 1)
     xx = torch.arange(hm_w, device=device, dtype=torch.float32).view(1, 1, hm_w)
     dy2 = (yy - cy.view(B, 1, 1)) ** 2
@@ -335,14 +458,38 @@ def train_loop(args):
                               augment=args.augment)
     val_ds = PointerDataset(args.dataset, train=False, val_frac=args.val_frac,
                             val_bg_ids=train_ds.val_bg_ids, augment=False)
+
+    # `--limit-val N` for fast regression smoke. Shuffle val entries with a
+    # fixed seed BEFORE slicing — `labels.jsonl` is written background-major
+    # and PointerDataset preserves order, so a naive `entries[:N]` would land
+    # on a single bg and mis-measure generalization.
+    if getattr(args, "limit_val", 0) > 0 and args.limit_val < len(val_ds.entries):
+        rng = random.Random(424242)
+        shuffled = list(val_ds.entries)
+        rng.shuffle(shuffled)
+        val_ds.entries = shuffled[: args.limit_val]
+        print(f"  --limit-val {args.limit_val}: shuffled+sliced val to {len(val_ds.entries)} samples")
+
     print(f"train: {len(train_ds)}  val: {len(val_ds)}  split: {train_ds.split_kind}  "
           f"train_augment={args.augment}")
     if train_ds.val_bg_ids:
         print(f"  val bgs ({len(train_ds.val_bg_ids)}): {sorted(train_ds.val_bg_ids)[:6]}...")
+
+    # PyTorch DataLoader reseeds *torch* RNGs per worker by default, but NOT
+    # Python's `random` or numpy's `np.random`. The augment path uses
+    # `random.*`, so without this hook workers fork with identical Python
+    # RNG state and produce correlated augmentations across the batch.
+    def _worker_init_fn(worker_id: int) -> None:
+        seed = (torch.initial_seed() + worker_id) % (2 ** 32)
+        random.seed(seed)
+        np.random.seed(seed)
+
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                           num_workers=args.workers, pin_memory=True, drop_last=False)
+                           num_workers=args.workers, pin_memory=True, drop_last=False,
+                           worker_init_fn=_worker_init_fn)
     val_dl = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
-                         num_workers=args.workers, pin_memory=True)
+                         num_workers=args.workers, pin_memory=True,
+                         worker_init_fn=_worker_init_fn)
 
     model = PointerNet().to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -356,10 +503,32 @@ def train_loop(args):
     # (helps escape local minima).
     resume_best = float("inf")
     if args.resume and os.path.exists(args.resume):
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(ckpt["model"])
-        resume_best = float(ckpt.get("val_pos_err_px", float("inf")))
-        prev_epoch = ckpt.get("epoch", "?")
+        # Detect `.safetensors` by suffix and load via `safetensors.torch`.
+        # Pull metadata (epoch, val_pos_err_px) from a `<stem>.config.json`
+        # sidecar if present (matches `inference._load_sidecar_config` and
+        # `scripts/convert_pt_to_safetensors.py`).
+        suffix = os.path.splitext(args.resume)[1].lower()
+        prev_epoch: object = "?"
+        if suffix == ".safetensors":
+            try:
+                from safetensors.torch import load_file
+            except ImportError as e:
+                raise SystemExit(
+                    "--resume on .safetensors needs `pip install safetensors`."
+                ) from e
+            state_dict = load_file(args.resume)
+            model.load_state_dict(state_dict)
+            sidecar = os.path.splitext(args.resume)[0] + ".config.json"
+            if os.path.exists(sidecar):
+                with open(sidecar) as f:
+                    meta = json.load(f)
+                resume_best = float(meta.get("val_pos_err_px", float("inf")))
+                prev_epoch = meta.get("epoch", "?")
+        else:
+            ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+            model.load_state_dict(ckpt["model"])
+            resume_best = float(ckpt.get("val_pos_err_px", float("inf")))
+            prev_epoch = ckpt.get("epoch", "?")
         print(f"resumed from {args.resume} (was epoch {prev_epoch}, "
               f"val_pos_err={resume_best:.1f}px)")
 
@@ -368,10 +537,15 @@ def train_loop(args):
 
     # Loss weights (v0.3)
     HM_WEIGHT = 10.0          # heatmap BCE total
-    HM_NEG_REL = 0.5          # neg term scaled relative to pos
-    XY_WEIGHT_WARMUP = 5.0    # soft-argmax MSE — full first 5 epochs
-    XY_WEIGHT_LATE = 2.5      # demoted after warmup; inference uses hard argmax
-    XY_WARMUP_EPOCHS = 5
+    # v0.5: separate weights for plain_neg (trivial — model emits flat heatmap
+    # within a few epochs) vs hard_neg (decoy distractors, the actual
+    # discriminative signal). Equal weighting wasted ~half the negative
+    # gradient on samples the model already gets right.
+    HM_PLAIN_NEG_REL = 0.25   # trivial backgrounds — small contribution
+    HM_HARD_NEG_REL = 1.0     # decoy cursors — full weight, primary neg signal
+    HM_NEG_REL_LEGACY = 0.5   # used when sample_type is unknown (legacy datasets)
+    # v0.5.1: xy regression head removed entirely from PointerNet.forward.
+    # Inference uses hard argmax + parabolic on raw logits via heatmap_to_xy_px.
     CONF_WEIGHT = 2.0         # bumped from 1.0 — conf head needs more pressure
 
     # Carry over the previous run's best so the rolling pointer (--weights-out)
@@ -383,63 +557,79 @@ def train_loop(args):
     best_val_err = resume_best
     pass_best = float("inf")
     for epoch in range(1, args.epochs + 1):
-        xy_w = XY_WEIGHT_WARMUP if epoch <= XY_WARMUP_EPOCHS else XY_WEIGHT_LATE
         model.train()
         t0 = time.monotonic()
-        train_xy_loss = 0.0; train_conf_loss = 0.0
-        train_hm_pos_loss = 0.0; train_hm_neg_loss = 0.0
-        n_train = 0; n_train_pos = 0; n_train_neg = 0
-        for x, target_xy, target_conf, _stype in train_dl:
+        train_conf_loss = 0.0
+        train_hm_pos_loss = 0.0
+        train_hm_plain_neg_loss = 0.0; train_hm_hard_neg_loss = 0.0
+        n_train = 0; n_train_pos = 0
+        n_train_plain_neg = 0; n_train_hard_neg = 0
+        for x, target_xy, target_conf, sample_type in train_dl:
             x = x.to(device, non_blocking=True)
             target_xy = target_xy.to(device, non_blocking=True)
             target_conf = target_conf.to(device, non_blocking=True)
-            pred_xy, pred_conf_logit, pred_hm = model(x)
+            sample_type = sample_type.to(device, non_blocking=True)
+            pred_conf_logit, pred_hm = model(x)
             B, _, H, W = pred_hm.shape
 
             pos_mask = target_conf
             neg_mask = 1.0 - target_conf
             pos_count = pos_mask.sum().clamp_min(1.0)
-            neg_count = neg_mask.sum().clamp_min(1.0)
+
+            # v0.5: split negatives into plain (trivial bg) vs hard (decoy
+            # cursor) so we can weight them differently. Unknown-sample-type
+            # entries (legacy datasets) fall back to the v0.4 single-weight
+            # path so old datasets still train without changes.
+            plain_id = SAMPLE_TYPES["plain_neg"]
+            hard_id = SAMPLE_TYPES["hard_neg"]
+            plain_mask = (sample_type == plain_id).float() * neg_mask
+            hard_mask = (sample_type == hard_id).float() * neg_mask
+            unknown_neg_mask = neg_mask * (1.0 - plain_mask) * (1.0 - hard_mask)
+            plain_count = plain_mask.sum().clamp_min(1.0)
+            hard_count = hard_mask.sum().clamp_min(1.0)
+            unknown_neg_count = unknown_neg_mask.sum().clamp_min(1.0)
 
             # Build target heatmap; ZERO for negatives so no peak is correct.
             # (v0.3 fix — negatives previously had zero loss contribution via
             # the positive-only mask, so the model never learned the "no cursor
             # → flat heatmap" supervision signal.)
-            target_hm_pos = make_target_heatmap(target_xy, H, W, sigma_px=2.0)
+            target_hm_pos = make_target_heatmap(target_xy, H, W)
             target_hm = target_hm_pos * pos_mask.view(-1, 1, 1, 1)
             hm_loss_per_b = F.binary_cross_entropy_with_logits(
                 pred_hm.squeeze(1), target_hm.squeeze(1), reduction='none'
             ).mean(dim=(1, 2))
-            # Split pos/neg terms — explicit control as data mix shifts.
             hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
-            hm_neg_loss = (hm_loss_per_b * neg_mask).sum() / neg_count
-            hm_loss = hm_pos_loss + HM_NEG_REL * hm_neg_loss
+            hm_plain_neg_loss = (hm_loss_per_b * plain_mask).sum() / plain_count
+            hm_hard_neg_loss = (hm_loss_per_b * hard_mask).sum() / hard_count
+            hm_unknown_neg_loss = (hm_loss_per_b * unknown_neg_mask).sum() / unknown_neg_count
+            hm_loss = (hm_pos_loss
+                      + HM_PLAIN_NEG_REL * hm_plain_neg_loss
+                      + HM_HARD_NEG_REL * hm_hard_neg_loss
+                      + HM_NEG_REL_LEGACY * hm_unknown_neg_loss)
 
-            # Soft-argmax MSE — secondary signal, weight schedule (warmup then demote)
-            xy_loss = ((pred_xy - target_xy) ** 2).sum(dim=1) * pos_mask
-            xy_loss = xy_loss.sum() / pos_count
-
+            # v0.5.1: soft-argmax xy_loss removed entirely. PointerNet.forward
+            # no longer computes pred_xy.
             conf_loss = F.binary_cross_entropy_with_logits(pred_conf_logit, target_conf)
-            loss = hm_loss * HM_WEIGHT + xy_loss * xy_w + conf_loss * CONF_WEIGHT
+            loss = hm_loss * HM_WEIGHT + conf_loss * CONF_WEIGHT
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
 
-            train_xy_loss += xy_loss.item() * x.size(0)
             train_conf_loss += conf_loss.item() * x.size(0)
             train_hm_pos_loss += hm_pos_loss.item() * pos_count.item()
-            train_hm_neg_loss += hm_neg_loss.item() * neg_count.item()
+            train_hm_plain_neg_loss += hm_plain_neg_loss.item() * plain_count.item()
+            train_hm_hard_neg_loss += hm_hard_neg_loss.item() * hard_count.item()
             n_train += x.size(0)
             n_train_pos += int(pos_count.item())
-            n_train_neg += int(neg_count.item())
+            n_train_plain_neg += int(plain_count.item())
+            n_train_hard_neg += int(hard_count.item())
         sched.step()
 
         # ---- Validation: sliced metrics by sample_type ----
         model.eval()
         slice_err_sum: dict[int, float] = {}      # heatmap+parabolic err (deployed inference path)
         slice_err_n: dict[int, int] = {}
-        slice_soft_err_sum: dict[int, float] = {} # soft-argmax err (legacy diag)
         slice_fpr_pred: dict[int, int] = {}   # how many predicted positive (conf > 0.5)
         slice_fpr_n: dict[int, int] = {}
         slice_peak_high: dict[int, int] = {}  # how many had heatmap peak > 0.5
@@ -448,7 +638,7 @@ def train_loop(args):
             for x, target_xy, target_conf, sample_type in val_dl:
                 x = x.to(device); target_xy = target_xy.to(device)
                 target_conf = target_conf.to(device); sample_type = sample_type.to(device)
-                pred_xy, pred_conf_logit, pred_hm = model(x)
+                pred_conf_logit, pred_hm = model(x)
                 pred_conf = torch.sigmoid(pred_conf_logit)
                 pred_label = (pred_conf > 0.5).float()
                 val_conf_correct += (pred_label == target_conf).sum().item()
@@ -468,36 +658,37 @@ def train_loop(args):
                 e_xn = hm_pred_xy_px[:, 0] - target_x_px
                 e_yn = hm_pred_xy_px[:, 1] - target_y_px
                 err_px = torch.sqrt(e_xn ** 2 + e_yn ** 2)
-                # Soft-argmax error for diagnostic logging (legacy v0.3.x metric)
-                soft_e_xn = (pred_xy[:, 0] - target_xy[:, 0]) * NATIVE_W
-                soft_e_yn = (pred_xy[:, 1] - target_xy[:, 1]) * NATIVE_H
-                soft_err_px = torch.sqrt(soft_e_xn ** 2 + soft_e_yn ** 2)
 
                 for t_id in sample_type.unique().tolist():
                     sel = (sample_type == t_id)
                     is_pos_type = (t_id == SAMPLE_TYPES["normal_pos"]
-                                   or t_id == SAMPLE_TYPES["edge_pos"]
-                                   or t_id == -1)  # legacy: assume positive
+                                   or t_id == SAMPLE_TYPES["edge_pos"])
                     if is_pos_type:
                         pos_sel = sel & (target_conf == 1)
                         if pos_sel.any():
                             slice_err_sum[t_id] = slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
-                            slice_soft_err_sum[t_id] = slice_soft_err_sum.get(t_id, 0.0) + soft_err_px[pos_sel].sum().item()
                             slice_err_n[t_id] = slice_err_n.get(t_id, 0) + int(pos_sel.sum().item())
+                    elif t_id == -1:
+                        # Legacy datasets: route by target_conf instead of t_id (#44).
+                        pos_sel = sel & (target_conf == 1)
+                        neg_sel = sel & (target_conf == 0)
+                        if pos_sel.any():
+                            slice_err_sum[t_id] = slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            slice_err_n[t_id] = slice_err_n.get(t_id, 0) + int(pos_sel.sum().item())
+                        if neg_sel.any():
+                            slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[neg_sel].sum().item())
+                            slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(neg_sel.sum().item())
+                            slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[neg_sel] > 0.5).sum().item())
                     else:
-                        # Negative slice: count false positives
+                        # Negative slice (hard_neg / plain_neg): count false positives
                         slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[sel].sum().item())
                         slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(sel.sum().item())
                         slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[sel] > 0.5).sum().item())
 
         dt = time.monotonic() - t0
-        # Aggregate metrics
         all_err_sum = sum(slice_err_sum.values()); all_err_n = sum(slice_err_n.values())
-        all_soft_err_sum = sum(slice_soft_err_sum.values())
-        mean_pos_err = all_err_sum / max(1, all_err_n)            # heatmap+parabolic (deployed inference)
-        mean_soft_err = all_soft_err_sum / max(1, all_err_n)      # soft-argmax (legacy)
+        mean_pos_err = all_err_sum / max(1, all_err_n)
         conf_acc = val_conf_correct / max(1, n_val)
-        # Per-slice formatted lines
         slice_lines = []
         for t_id, name in SAMPLE_TYPES_INV.items():
             if t_id in slice_err_n and slice_err_n[t_id] > 0:
@@ -511,11 +702,11 @@ def train_loop(args):
 
         print(f"epoch {epoch:3d}/{args.epochs}  "
               f"train_hm_pos={train_hm_pos_loss/max(1,n_train_pos):.4f} "
-              f"train_hm_neg={train_hm_neg_loss/max(1,n_train_neg):.4f} "
-              f"train_xy={train_xy_loss/n_train:.4f} train_conf={train_conf_loss/n_train:.4f}  "
-              f"val_pos_err={mean_pos_err:.1f}px(hm+parab) "
-              f"val_soft={mean_soft_err:.1f}px val_conf_acc={conf_acc*100:.1f}%  "
-              f"lr={opt.param_groups[0]['lr']:.5f} xy_w={xy_w:.1f}  ({dt:.1f}s)")
+              f"train_hm_plain={train_hm_plain_neg_loss/max(1,n_train_plain_neg):.4f} "
+              f"train_hm_hard={train_hm_hard_neg_loss/max(1,n_train_hard_neg):.4f} "
+              f"train_conf={train_conf_loss/n_train:.4f}  "
+              f"val_pos_err={mean_pos_err:.1f}px(hm+parab) val_conf_acc={conf_acc*100:.1f}%  "
+              f"lr={opt.param_groups[0]['lr']:.5f}  ({dt:.1f}s)")
         if slice_lines:
             print(f"        {slice_str}")
 
@@ -524,7 +715,6 @@ def train_loop(args):
             ckpt = {"model": model.state_dict(),
                     "epoch": epoch,
                     "val_pos_err_px": mean_pos_err,
-                    "val_soft_err_px": mean_soft_err,
                     "val_conf_acc": conf_acc,
                     "native_size": (NATIVE_W, NATIVE_H),
                     "train_size": (TRAIN_W, TRAIN_H),
@@ -540,17 +730,21 @@ def train_loop(args):
             # rounded val_pos_err don't overwrite each other's weights.
             pass_id = os.environ.get("IPF_PASS_ID", "").strip()
             pass_tag = f"_p{pass_id}" if pass_id else ""
+            # Per-best snapshot uses the same suffix as --weights-out so users
+            # who pass `--weights-out pointer_model.safetensors` get a
+            # consistent set of output files (#51).
+            wo_suffix = os.path.splitext(args.weights_out)[1] or ".pt"
             err_path = os.path.join(
                 os.path.dirname(args.weights_out),
-                f"pointer_model_v{version}{pass_tag}_{mean_pos_err:.1f}px.pt")
-            torch.save(ckpt, err_path)
+                f"pointer_model_v{version}{pass_tag}_{mean_pos_err:.1f}px{wo_suffix}")
+            save_checkpoint(ckpt, err_path)
             log_extras = []
             # Capture the boolean BEFORE the update so the log tag is honest
             # even on an exact float tie with the previous global best.
             is_global = mean_pos_err < best_val_err
             if is_global:
                 best_val_err = mean_pos_err
-                torch.save(ckpt, args.weights_out)
+                save_checkpoint(ckpt, args.weights_out)
                 log_extras.append(os.path.basename(args.weights_out))
             log_extras.append(os.path.basename(err_path))
             tag = "✓ saved global-best" if is_global else "↪ saved pass-best"
@@ -578,6 +772,11 @@ def main() -> int:
                         "train-time augmentation made data loading more CPU-heavy")
     p.add_argument("--val-frac", type=float, default=0.10,
                    help="fraction of bg_ids to hold out for validation (bg-level split)")
+    p.add_argument("--limit-val", type=int, default=0,
+                   help="if >0, evaluate on only N (shuffled) val samples per epoch — "
+                        "fast regression smoke during dev. Shuffles with a fixed seed "
+                        "before slicing so the slice is representative of all val "
+                        "backgrounds, not just the first.")
     p.add_argument("--augment", action="store_true", default=True,
                    help="enable train-time random crop + flip + photometric jitter "
                         "(v0.3.1 default ON — disable with --no-augment for ablation)")

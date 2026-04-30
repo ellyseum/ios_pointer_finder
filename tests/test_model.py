@@ -21,18 +21,17 @@ def test_param_count_reasonable():
 
 
 def test_forward_shape_eval():
-    """Forward pass on a unit-batch, native-resized input should return
-    (xy [B,2], conf [B,1], heatmap [B,1,h,w])."""
+    """Forward pass on a unit-batch input should return (conf [B,1], heatmap [B,1,h,w]).
+    v0.5.1: dropped soft-argmax xy output."""
     model = PointerNet().eval()
     x = torch.zeros(1, 3, TRAIN_H, TRAIN_W, dtype=torch.float32)
     with torch.no_grad():
         out = model(x)
 
     assert isinstance(out, (tuple, list))
-    assert len(out) == 3, f"expected 3 outputs, got {len(out)}"
+    assert len(out) == 2, f"expected 2 outputs (conf, heatmap), got {len(out)}"
 
-    xy, conf, hm = out
-    assert xy.shape == (1, 2), f"xy shape: {xy.shape}"
+    conf, hm = out
     assert conf.shape in {(1, 1), (1,)}, f"conf shape: {conf.shape}"
     assert hm.dim() == 4 and hm.shape[0] == 1 and hm.shape[1] == 1, f"hm shape: {hm.shape}"
     # 1/8 stride of the train resolution (3 stride-2 conv blocks).
@@ -44,8 +43,7 @@ def test_forward_dtype():
     model = PointerNet().eval()
     x = torch.zeros(1, 3, TRAIN_H, TRAIN_W, dtype=torch.float32)
     with torch.no_grad():
-        xy, conf, hm = model(x)
-    assert xy.dtype == torch.float32
+        conf, hm = model(x)
     assert conf.dtype == torch.float32
     assert hm.dtype == torch.float32
 
@@ -55,6 +53,6 @@ def test_batch_dim_passthrough():
     model = PointerNet().eval()
     x = torch.zeros(3, 3, TRAIN_H, TRAIN_W, dtype=torch.float32)
     with torch.no_grad():
-        xy, conf, hm = model(x)
-    assert xy.shape[0] == 3
+        conf, hm = model(x)
     assert hm.shape[0] == 3
+    assert conf.shape[0] == 3

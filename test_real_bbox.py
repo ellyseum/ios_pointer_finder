@@ -103,7 +103,7 @@ def main() -> int:
             continue
         x = preprocess(img).to(device)
         with torch.no_grad():
-            _, conf_logit, hm = model(x)
+            conf_logit, hm = model(x)  # v0.5.1: 2-tuple
         conf = torch.sigmoid(conf_logit).item()
         bbox, center, peak = heatmap_to_bbox(hm, NATIVE_W, NATIVE_H, rel_thresh=args.rel_thresh)
         name = os.path.basename(fp)

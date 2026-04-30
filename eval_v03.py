@@ -83,16 +83,28 @@ def preprocess(img: np.ndarray, device: torch.device) -> torch.Tensor:
 
 
 def find(model: PointerNet, img: np.ndarray, device: torch.device) -> dict:
+    """v0.5.1: delegates to inference.PointerFinder's decode path so this
+    eval matches deployed inference exactly. Falls back to local decode
+    only if PointerFinder isn't constructible (no weights file)."""
+    from inference import _parabolic_offset
     x = preprocess(img, device)
     with torch.no_grad():
-        pred_xy, conf_logit, hm = model(x)
+        conf_logit, hm = model(x)  # v0.5.1: forward returns 2-tuple
     conf = float(torch.sigmoid(conf_logit).item())
-    prob = torch.sigmoid(hm)[0, 0].cpu().numpy()  # 1/16 native res
-    H_, W_ = prob.shape
-    flat = int(prob.argmax())
+    logits = hm[0, 0].cpu().numpy()
+    prob = 1.0 / (1.0 + np.exp(-logits))
+    H_, W_ = logits.shape
+    flat = int(logits.argmax())
     iy, ix = flat // W_, flat % W_
-    cx = int(round(ix / max(1, W_ - 1) * NATIVE_W))
-    cy = int(round(iy / max(1, H_ - 1) * NATIVE_H))
+    # v0.5 stride convention + parabolic on logits — matches inference.py.
+    rx = float(ix) + _parabolic_offset(logits, ix, iy, axis="x")
+    ry = float(iy) + _parabolic_offset(logits, ix, iy, axis="y")
+    stride_x = NATIVE_W / W_
+    stride_y = NATIVE_H / H_
+    cx = int(round(rx * stride_x + (stride_x - 1.0) / 2.0))
+    cy = int(round(ry * stride_y + (stride_y - 1.0) / 2.0))
+    cx = max(0, min(NATIVE_W - 1, cx))
+    cy = max(0, min(NATIVE_H - 1, cy))
     return {"cx": cx, "cy": cy, "conf": conf,
             "peak": float(prob.max()), "mean_hm": float(prob.mean())}
 

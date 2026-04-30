@@ -1,9 +1,11 @@
 # Dataset Guide
 
-`ios_pointer_finder` trains on **synthetic data**: real iPhone backgrounds + a
-programmatically-generated cursor sprite alpha-composited at random
-positions. No real cursor photos are used; the published checkpoints'
-backgrounds were the trainer's own iPhone screens and are not redistributed.
+`ios_pointer_finder` trains on **synthetic data**: real iPhone backgrounds
++ a real captured iOS Pointer-Control sprite alpha-composited at random
+positions. The sprite ships with the repo at `sprites/at_dot.png`
+(36×36 BGRA, alpha-matted from a single high-resolution capture). The
+published checkpoints' backgrounds were the trainer's own iPhone screens
+and are not redistributed.
 
 This guide tells you how to collect your own backgrounds and synthesize a
 training set locally.
@@ -70,7 +72,9 @@ capture paths, just produce equivalently-sized PNGs in `backgrounds_kept/`.
 Once `backgrounds_kept/` is populated:
 
 ```bash
-python synthesize.py --out dataset --n 150000
+# Generates per_bg samples per background (default 1100). Total ≈
+# num_backgrounds × per_bg, minus rejected edge_pos slivers.
+python synthesize.py --out-dir dataset --per-bg 1100 --seed 42
 ```
 
 This writes:
@@ -116,7 +120,7 @@ to redistribute. Drop a few into `backgrounds_kept/` and run synthesis with
 
 ## Reproducing the published checkpoints
 
-You cannot fully reproduce the v0.3.x checkpoints' validation numbers
+You cannot fully reproduce the published checkpoints' validation numbers
 without the trainer's private background set, because the bg-level split
 holds out *specific* backgrounds. You can:
 

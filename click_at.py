@@ -94,20 +94,29 @@ class PointerFinder:
             return None
         x = self._preprocess(img_bgr)
         with torch.no_grad():
-            _, conf_logit, hm = self.model(x)
+            conf_logit, hm = self.model(x)  # v0.5.1: 2-tuple
         conf = float(torch.sigmoid(conf_logit).item())
-        prob = torch.sigmoid(hm)[0, 0].cpu().numpy()  # (H', W')
-        H, W = prob.shape
-        flat_idx = int(prob.argmax())
+        # v0.5.1: parabolic on raw logits (not sigmoid; sigmoid saturates near
+        # peak and collapses the second derivative); stride-aware native decode.
+        logits = hm[0, 0].cpu().numpy()
+        H, W = logits.shape
+        flat_idx = int(logits.argmax())
         iy, ix = flat_idx // W, flat_idx % W
-        sub_x, sub_y = _parabolic_subpixel(prob, ix, iy)
-        ix_r = ix + sub_x
-        iy_r = iy + sub_y
-        x_norm = ix_r / max(1, W - 1)
-        y_norm = iy_r / max(1, H - 1)
-        cx = int(round(x_norm * nw))
-        cy = int(round(y_norm * nh))
-        peak = float(prob[iy, ix])
+        sub_x, sub_y = _parabolic_subpixel(logits, ix, iy)
+        # Clamp to [-0.5, 0.5] so an anomalous logit profile can't push the
+        # offset beyond half-cell (the parabola vertex is by definition the
+        # local extremum within a cell).
+        sub_x = max(-0.5, min(0.5, sub_x))
+        sub_y = max(-0.5, min(0.5, sub_y))
+        rx = ix + sub_x
+        ry = iy + sub_y
+        stride_x = nw / W
+        stride_y = nh / H
+        cx = int(round(rx * stride_x + (stride_x - 1.0) / 2.0))
+        cy = int(round(ry * stride_y + (stride_y - 1.0) / 2.0))
+        cx = max(0, min(nw - 1, cx))
+        cy = max(0, min(nh - 1, cy))
+        peak = float(1.0 / (1.0 + np.exp(-logits[iy, ix])))
         return cx, cy, conf, peak
 
 

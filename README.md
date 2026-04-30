@@ -6,7 +6,7 @@ A 338K-parameter CNN that finds the iPhone Pointer-Control cursor in a screen ca
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Weights: CC-BY-4.0](https://img.shields.io/badge/Weights-CC--BY--4.0-lightgrey.svg)](LICENSE-WEIGHTS)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Model: v0.3.4](https://img.shields.io/badge/model-v0.3.4-green.svg)](https://github.com/ellyseum/ios_pointer_finder/releases/tag/v0.3.4)
+[![Model: v0.6.0](https://img.shields.io/badge/model-v0.6.0-green.svg)](https://github.com/ellyseum/ios_pointer_finder/releases/tag/v0.6.0)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 When you pair a Bluetooth mouse with an iPhone, iOS draws a small "@-symbol" cursor on the
@@ -23,8 +23,8 @@ that drives an unmodified phone over BLE HID + AirPlay mirroring.
 
 ## Quickstart
 
-> **Status:** PyPI publish + Hugging Face Hub model repo are not live yet — both
-> are gated on the v0.4 retrain finishing (see [Roadmap](#roadmap-milestones)).
+> **Status:** PyPI publish + Hugging Face Hub model repo are not live yet —
+> both are gated on the v0.6 retrain finishing (see [Roadmap](#roadmap-milestones)).
 > Today's install path is from a clone:
 
 ```bash
@@ -36,14 +36,17 @@ pip install -e ".[hub,safetensors]"
 Then either:
 
 **A) Train your own weights** (see [Train your own](#train-your-own) below) — produces
-`pointer_model_v{X}.{Y}.{Z}_{err}px.pt`. Convert with:
+`pointer_model_v{X}.{Y}.{Z}_{err}px.{pt|safetensors}`. Convert legacy `.pt` to
+`.safetensors`:
 
 ```bash
-python scripts/convert_pt_to_safetensors.py pointer_model_v0.3.4_30.5px.pt
-# → pointer_model_v0.3.4_30.5px.safetensors  +  pointer_model_v0.3.4_30.5px.config.json
+python scripts/convert_pt_to_safetensors.py pointer_model_v0.6.0_18.0px.pt
+# → pointer_model_v0.6.0_18.0px.safetensors  +  pointer_model_v0.6.0_18.0px.config.json
 ```
 
-**B) Once the HF repo is up** (gated on the v0.4 retrain), use the one-liner the
+`train.py` can also write `.safetensors` directly via `--weights-out *.safetensors`.
+
+**B) Once the HF repo is up** (gated on the v0.6 retrain), use the one-liner the
 package is designed for:
 
 ```python
@@ -61,7 +64,7 @@ For now (path A), call `PointerFinder` with a local `.safetensors` or `.pt` path
 
 ```python
 from inference import PointerFinder
-finder = PointerFinder.from_pretrained("./pointer_model_v0.3.4_30.5px.safetensors")
+finder = PointerFinder.from_pretrained("./pointer_model_v0.6.0_18.0px.safetensors")
 ```
 
 See [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) for the full inference contract and provenance.
@@ -81,19 +84,19 @@ cursor finder answers "where's the cursor" continuously.
 
 ---
 
-## Model card (v0.3.4)
+## Model card (v0.6.0)
 
 | Field                | Value                                                |
 |----------------------|------------------------------------------------------|
 | Architecture         | 5-block conv backbone → 1×1 heatmap head + conf head |
 | Parameters           | 338,274                                              |
-| File size            | 1.3 MB (.safetensors fp32; int8 quantization planned for v0.4) |
+| File size            | 1.3 MB (.safetensors fp32)                           |
 | Native input         | 994 × 2160 (iPhone H264 stream)                      |
 | Train input          | 497 × 1080 (2× downsample)                           |
 | Heatmap stride       | 1/8 of train resolution (≈ 1/16 of native after the 2× input downsample) |
 | Inference latency    | 10 ms (RTX 5080) / ~30 ms (M-series CoreML)          |
 | Throughput           | 95 fps (single-image batch, fp32, RTX 5080)          |
-| Val pos error        | 30.5 px on bg-level held-out split                   |
+| Val pos error        | TBD — v0.6.0 cold-start retrain pending. v0.5 reached 18.9 px on bg-level honest split before the v0.6 fixes landed. |
 | FPR (cursor-free)    | <2% at conf ≥ 0.5 on held-out backgrounds            |
 | Weights license      | CC-BY-4.0                                            |
 
@@ -117,9 +120,14 @@ iPhone screen capture (994×2160 BGR)
 
 Trained on synthetic composites:
 - **backgrounds** — real iPhone screen captures (cursor-free) — bring your own
-- **cursor** — programmatically-generated soft-disc sprite (~46 px diameter, peak alpha 0.25, edge falloff)
-  alpha-composited at random positions; the synthetic mix includes hard negatives (decoy shapes)
-  and edge-clipped positives (cursor partially off-screen).
+- **cursor** — real captured iOS Pointer-Control sprite (`sprites/at_dot.png`,
+  alpha-matted from a single high-resolution capture), resized to ~46 native px
+  and composited at random positions. Labels use the **alpha-mass centroid**
+  (the click anchor) rather than the geometric tile center — the iOS pointer
+  is left-right asymmetric and biased upward in its tile.
+  The synthetic mix includes hard negatives (decoy shapes designed to look
+  cursor-like at a distance) and edge-clipped positives (cursor partially
+  off-screen).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data + loss + training
 schedule writeup.
@@ -131,18 +139,28 @@ schedule writeup.
 | Version | Val pos err | Cursor-free FPR | Real-frame top-1 hit | Inference (ms, RTX 5080) |
 |--------:|------------:|----------------:|---------------------:|-------------------------:|
 | v0.2    | 73.9 px     | 27%             | 41/50                | 10                       |
-| v0.3.0  | 30.8 px*    | 8%              | 47/50                | 10                       |
-| v0.3.1  | 39.6 px     | 6%              | 48/50                | 10                       |
-| v0.3.2  | 43.4 px     | 5%              | 48/50                | 10                       |
-| v0.3.3  | 35.4 px     | 3%              | 49/50                | 10                       |
-| **v0.3.4** | **30.5 px** | **<2%** | **49/50** | **10** |
+| v0.3.4  | 30.5 px     | 1.7%            | 49/50                | 10                       |
+| v0.4.0  | 22.9 px     | <2%             | —                    | 10                       |
+| v0.5.0  | 18.9 px     | <2%             | —                    | 10                       |
+| **v0.6.0** | **TBD** | **TBD**         | **—**                | **10**                   |
 
-*v0.3.0's val number is leaky (sample-level split). v0.3.x and later use bg-level split — apples-to-apples comparable from v0.3.2 onward.
+All versions train on synthetic data (real backgrounds + composited cursor
+sprite) with a bg-level honest val split — apples-to-apples comparable from
+v0.3.x onward. v0.4.0 added correctness fixes (float labels through
+augmentation, parabolic subpixel refinement at inference). v0.5.0 swapped
+the cursor sprite source from a procedural smoothstep disc to an alpha-
+matted PNG of the real iOS Pointer-Control cursor (still synthetic
+compositing), fixed the coordinate mapping to match the FCN's actual stride,
+and moved subpixel refinement to raw heatmap logits. v0.6.0 simplifies the
+forward signature (drops the unused soft-argmax head), tightens augmentation
+(asymmetric crop matching the real-sprite hotspot, H-flip disabled on
+positives), and unifies the decoder across all aux scripts. v0.6.0 number
+lands here once retrain completes.
 
 Run the eval harness yourself:
 
 ```bash
-python eval_v03.py --v02 pointer_model_v0.2.0.pt --v03 pointer_model_v0.3.4.safetensors
+python eval_v03.py --v02 pointer_model_v0.2.0.pt --v03 pointer_model_v0.6.0.safetensors
 ```
 
 ---
@@ -254,31 +272,25 @@ device" to "works on any current iPhone."
 | Stage | Tag(s)        | Story |
 |------:|---------------|-------|
 | PoC   | `v0.1` / `v0.2` | Initial proof: synthetic-data CNN learns the cursor sprite at all. Bg-leaky validation, 73.9 px val pos error. |
-| Refinements | `v0.3.0` | Heatmap regression head replaces xy-only regression. **Loss mask fix** so negatives no longer push down the heatmap globally. **Bg-level val split** so the validation number stops being leaky. **Hard negatives** (decoy cursor shapes) so the model rejects icon dots and notification badges. 30.8 px val (honest split) but starts overfitting. |
-| Overfit fixes + conf | `v0.3.1` … `v0.3.4` | Train-time augmentation (random crop + horizontal flip + photometric jitter), late-backbone dropout, conf-head loss weight bumped, cosine restart from previous best. **30.5 px val pos error (current best)**, cursor-free FPR <2%. |
-| **v0.4 (planned)** | — | Correctness fixes: float labels propagated through augmentation, parabolic subpixel refinement at inference, ONNX/CoreML/tfjs export parity check, fp32 → int8 quant ablation. Target: **<20 px val pos err**. |
-| **v0.5 (planned)** | — | **Bootstrap loop / noisy-student self-labeling.** A trained agent moves the cursor across the screen, captures real frames, and emits verified labels (move → observe → reverse-move → re-observe). Retrain on real-cursor data instead of synthesis. Eliminates the synthetic-data ceiling. |
-| **v0.6+ (planned)** | — | **Generalization across current iPhones.** Multi-device dataset (iPhone 15 series, iPhone 16 / Pro / Pro Max / Plus) collected via the v0.5 bootstrap loop on each device. One model that works on any current iPhone in portrait + landscape. |
-| **v1.0** | — | Stable public API + cross-platform export (CoreML / ONNX / tfjs) + multi-device coverage. Frozen interface. |
+| Heatmap head + honest val | `v0.3.0` … `v0.3.4` | Heatmap regression replaces xy-only regression. **Loss mask fix** so negatives no longer push down the heatmap globally. **Bg-level val split** so validation stops leaking. **Hard negatives** (decoy cursor shapes) so the model rejects icon dots and badges. **Train-time augmentation** + cosine restart for the overfit-fix wave. v0.3.4: 30.5 px val, FPR <2%. |
+| Correctness wave I | `v0.4.0` | Float labels through augmentation, parabolic subpixel refinement at inference, mask-aware heatmap eval. 22.9 px val. |
+| Correctness wave II | `v0.5.0` | Real captured iOS pointer sprite (replaces procedural smoothstep disc — still synthetic compositing), alpha-mass-centroid labels (replaces geometric-tile-center labels), stride-aware coord mapping (replaces linear stretch), parabolic on raw logits (replaces sigmoid-domain), tighter Gaussian σ, plain/hard neg loss split. 18.9 px val. |
+| **v0.6.0** (current) | `v0.6.0` | Forward signature simplified — drops the unused soft-argmax head — so `PointerNet.forward(x)` returns `(conf_logit, heatmap)`. Asymmetric cursor-safe crop matching the real-sprite hotspot. H-flip disabled on positives (real sprite is left-right asymmetric). Hard-negative crop guard. Single canonical decoder reused by all aux scripts and exporters. `.safetensors` round-trip with `<stem>.config.json` sidecar. **Breaking change** for the exported `.onnx` / `.mlpackage` schema. |
+| **Bootstrap loop (planned)** | — | Use a trained-enough agent to drive the cursor and emit verified real labels (move → observe → reverse-move → re-observe). Retrain on synthesis + verified-real. Eliminates the synthetic-data ceiling without manual labels. |
+| **Generalization (planned)** | — | Multi-device dataset (iPhone 15 series, 16 / Pro / Pro Max / Plus) collected via the bootstrap loop on each device. One model that works on any current iPhone in portrait + landscape. Per-app UI element classifier as a second perception head. |
+| **v1.0** | — | Stable public API + cross-platform export (CoreML / ONNX) + multi-device coverage. Frozen interface. |
 
 ## Roadmap milestones
 
-- **v0.4** — correctness fixes + portable artifacts
-  - Float labels through augmentation
-  - Parabolic subpixel refinement at inference time
-  - ONNX + CoreML + tfjs export with parity check
-  - int8 quantization ablation (target: 340 KB checkpoint, <2 px accuracy delta)
-  - Benchmark script (latency + throughput on RTX / M-series / CPU)
-
-- **v0.5** — bootstrap loop / noisy-student self-labeling
+- **Bootstrap loop / noisy-student self-labeling** (next)
   - On-device explorer agent: drives the cursor, records frame + commanded position
-  - Move-and-undo dance for verified ground-truth labels (motion existence + reversibility, not commanded magnitude)
+  - Move-and-undo dance for verified ground-truth labels (motion existence + reversibility, NOT commanded magnitude — iOS Tracking Speed is per-device-tunable)
   - 3.5 s auto-hide window for cursor-free background capture
-  - Retrain on real-cursor data; iterate until val saturates
-  - Goal: surpass synthetic-data ceiling on real-frame eval
+  - Retrain on synthesis + verified-real mix; iterate until val saturates
+  - Goal: surpass the synthetic-only ceiling on real-frame eval
 
-- **v0.6+** — generalization
-  - Bootstrap on iPhone 15 / 15 Pro / 16 / 16 Pro / 16 Plus
+- **Generalization across iPhones**
+  - Bootstrap on iPhone 15 / 15 Pro / 16 / 16 Pro / 16 Plus / 16 Pro Max
   - Landscape orientation
   - Single multi-device model
   - Per-app UI element classifier as a second perception head
@@ -293,7 +305,7 @@ device" to "works on any current iPhone."
   title        = {ios\_pointer\_finder: a tiny CNN for iPhone Pointer-Control cursor detection},
   year         = {2026},
   url          = {https://github.com/ellyseum/ios_pointer_finder},
-  version      = {0.3.4}
+  version      = {0.6.0}
 }
 ```
 
@@ -306,6 +318,9 @@ See [`CITATION.cff`](CITATION.cff) for machine-readable citation metadata.
 - **Code**: MIT (see [`LICENSE`](LICENSE))
 - **Trained weights**: CC-BY-4.0 (see [`LICENSE-WEIGHTS`](LICENSE-WEIGHTS))
 
-The cursor sprite used during training is **synthesized programmatically** in
-`synthesize.py:make_pointer_mask` (a soft-disc Gaussian, calibrated against measurements
-of the on-screen cursor). No iOS image assets ship in this repository.
+The cursor sprite used during training (`sprites/at_dot.png`, 36×36 BGRA) was
+captured from a single high-resolution screenshot of the iOS Pointer-Control
+cursor and alpha-matted by hand. It ships in this repository as a small
+training artifact; iOS asset reproduction at this scale and form is fair-use
+research/utility, not a redistribution of any Apple image set. Hard-negative
+decoy sprites are still procedurally generated in `synthesize.py`.

@@ -22,6 +22,11 @@
 # Logs: ${LOG_PREFIX}-pass-N.log per pass.
 
 set -e
+# `pipefail` so a crash inside `python train.py` propagates through the
+# `2>&1 | tee "$LOG"` pipe. Without it, tee's exit-0 swallows train.py
+# crashes and the loop continues against stale weights, eventually exiting
+# clean via the no-improve gate after burning hours of wall time.
+set -o pipefail
 cd "$(dirname "$0")"
 
 EPOCHS_PER_PASS="${EPOCHS_PER_PASS:-15}"

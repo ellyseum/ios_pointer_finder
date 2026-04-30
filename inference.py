@@ -224,25 +224,32 @@ class PointerFinder:
         x = ((x - 0.5) / 0.25).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            _, conf_logit, hm = self.model(x)
+            conf_logit, hm = self.model(x)  # v0.5.1: forward returns 2-tuple
 
         conf = float(torch.sigmoid(conf_logit).item())
-        prob = torch.sigmoid(hm)[0, 0].cpu().numpy()
-        H, W = prob.shape
-        flat = int(prob.argmax())
+        # v0.5: parabolic subpixel fit is applied to RAW LOGITS, not sigmoid
+        # output. The training target is exp(-d²/2σ²); logit(target) is
+        # parabolic in `d` near the peak, while the sigmoid saturates and
+        # collapses the second derivative. Fitting on logits restores subpixel
+        # precision lost to saturation bias.
+        logits = hm[0, 0].cpu().numpy()
+        prob = 1.0 / (1.0 + np.exp(-logits))  # sigmoid for heatmap_peak
+        H, W = logits.shape
+        flat = int(logits.argmax())
         iy, ix = flat // W, flat % W
-        # Parabolic subpixel refinement (v0.4). Fit a 1-D parabola to the
-        # argmax cell and its two neighbors on each axis. The vertex offset
-        # (in cell units) is a closed-form 0.5*(a-c)/(a-2b+c). Refines the
-        # cursor location below the heatmap stride (~16 native px) without
-        # extra forward passes.
-        rx = float(ix) + _parabolic_offset(prob, ix, iy, axis="x")
-        ry = float(iy) + _parabolic_offset(prob, ix, iy, axis="y")
-        # Map refined heatmap-cell index → native pixel coordinate. Clamp to
-        # [0, nw-1] / [0, nh-1] so callers can use the result as an array
-        # index directly.
-        cx = min(nw - 1, max(0, int(round(rx / max(1, W - 1) * nw))))
-        cy = min(nh - 1, max(0, int(round(ry / max(1, H - 1) * nh))))
+        # Parabolic subpixel refinement on logits.
+        rx = float(ix) + _parabolic_offset(logits, ix, iy, axis="x")
+        ry = float(iy) + _parabolic_offset(logits, ix, iy, axis="y")
+        # v0.5: stride-aware cell→native mapping (replaces v0.4 linear stretch
+        # `rx/(W-1)*nw` which forced the model to learn a non-uniform spatial
+        # warp). Cell `i` has receptive-field center at native pixel
+        # `i*stride + (stride-1)/2` where stride = native_dim / hm_dim.
+        stride_x = nw / W
+        stride_y = nh / H
+        rx_native = rx * stride_x + (stride_x - 1.0) / 2.0
+        ry_native = ry * stride_y + (stride_y - 1.0) / 2.0
+        cx = min(nw - 1, max(0, int(round(rx_native))))
+        cy = min(nh - 1, max(0, int(round(ry_native))))
         return PointerPrediction(
             x=cx,
             y=cy,

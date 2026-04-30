@@ -7,9 +7,14 @@ Usage:
 
 The exported ONNX has:
   - input  "image":   float32 [1, 3, TRAIN_H, TRAIN_W] in [-2, 2] normalized space
-  - output "xy":      float32 [1, 2]   — regression head (kept for back-compat)
   - output "conf":    float32 [1]      — confidence logit
   - output "heatmap": float32 [1, 1, H/16, W/16]
+
+v0.5.1: removed the "xy" output. PointerNet.forward no longer computes the
+soft-argmax regression head (it was unused at XY_WEIGHT=0 and used the wrong
+coordinate convention). Inference: argmax + parabolic on raw logits via
+inference.PointerFinder. **This is a public-contract break for prior .onnx
+artifacts that bound the "xy" output by name** — see CHANGELOG for details.
 """
 
 from __future__ import annotations
@@ -40,10 +45,9 @@ def export(weights: Path, out: Path, opset: int = 17, check: bool = False) -> Pa
         dummy,
         str(out),
         input_names=["image"],
-        output_names=["xy", "conf", "heatmap"],
+        output_names=["conf", "heatmap"],
         dynamic_axes={
             "image": {0: "batch"},
-            "xy": {0: "batch"},
             "conf": {0: "batch"},
             "heatmap": {0: "batch"},
         },
@@ -63,7 +67,7 @@ def export(weights: Path, out: Path, opset: int = 17, check: bool = False) -> Pa
             torch_outs = model(torch.from_numpy(x))
         torch_outs = [t.cpu().numpy() for t in torch_outs]
 
-        for name, t, o in zip(["xy", "conf", "heatmap"], torch_outs, ort_outs, strict=False):
+        for name, t, o in zip(["conf", "heatmap"], torch_outs, ort_outs, strict=False):
             diff = float(np.max(np.abs(t - o)))
             print(f"  parity check {name:>7}: max |Δ| = {diff:.2e}")
             assert diff < 1e-4, f"ONNX export drifted on {name}: {diff}"
