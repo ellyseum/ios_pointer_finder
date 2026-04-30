@@ -315,7 +315,13 @@ class PointerDataset(Dataset):
 
     def __getitem__(self, i: int):
         e = self.entries[i]
-        img = cv2.imread(os.path.join(self.dataset_dir, e["path"]))
+        path = os.path.join(self.dataset_dir, e["path"])
+        img = cv2.imread(path)
+        if img is None:
+            raise FileNotFoundError(
+                f"PointerDataset: failed to read {path} "
+                f"(corrupt JPEG or partial regen?)"
+            )
         if self.augment:
             img, e = self._apply_train_augment(img, e)
         img = cv2.resize(img, (TRAIN_W, TRAIN_H), interpolation=cv2.INTER_AREA)
@@ -368,7 +374,9 @@ class PointerNet(nn.Module):
             nn.Conv2d(128, 128, 3, stride=1, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
             nn.Dropout2d(p=dropout_p),
         )
-        # Heatmap head: 1-channel score map at 1/16 resolution
+        # Heatmap head: 1-channel score map at 1/8 train resolution
+        # (= 1/16 native resolution after the 2x train→native upsample).
+        # Three stride-2 conv blocks above + 2x train→native = 16x effective.
         self.heatmap_head = nn.Conv2d(128, 1, 1)
         # Confidence head: global avg pool + small MLP
         self.conf_head = nn.Sequential(
