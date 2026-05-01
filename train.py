@@ -660,15 +660,25 @@ def train_loop(args):
     # v0.7-7b: heatmap BCE switched to .sum(dim=(2,3)) — see hm_loss_per_b
     # below. Pre-v0.7 used .mean(dim=(1,2)) over 8505 cells, which made the
     # effective per-positive-cell heatmap gradient ~1400× weaker than the
-    # confidence head's gradient (calibrated empirically — confidence
-    # accuracy plateaued near the dataset prior because localization
-    # gradient was nearly absent at the shared backbone).
+    # confidence head's gradient (the model learned 'is something here'
+    # fast and 'where exactly' slowly).
     #
-    # HM_WEIGHT = 2e-5 calibrated by sweeping {5e-6, 1e-5, 2e-5, 5e-5, 1e-4,
-    # 5e-4} over 25-step micro-runs and picking the value where the
-    # heatmap-head gradient norm ≈ conf-head gradient norm at the shared
-    # backbone (target ratio 1.0; observed ratio at 2e-5 = 0.948).
-    HM_WEIGHT = 2e-5
+    # HM_WEIGHT calibration history:
+    #   - 2e-5: chosen by per-head gradient-norm balance at fresh init
+    #     (25 steps from random weights). Failed in practice — Cold-Start
+    #     #1 P1 stalled at 300 px val_pos_err vs v0.6.2's 36.7 at the same
+    #     point. The fresh-init metric biased toward over-suppressing the
+    #     heatmap path because BCE-sum gradient is huge at random init
+    #     (model uniformly predicts ~0.5 on 8505 cells against a target
+    #     that is 0 almost everywhere).
+    #   - 2e-3 (current): chosen by total-loss-contribution match. Pre-v0.7
+    #     mean-form had hm_loss × HM_WEIGHT ≈ 0.18 early (13% of total);
+    #     2e-3 × sum-form hm_loss (~80) = 0.16 early (14% of total). This
+    #     puts the optimizer in the same total-objective regime as v0.4
+    #     (which hit 22.9 px on procedural disc) while preserving the
+    #     v0.7 fix that the per-cell gradient is no longer diluted by the
+    #     8505× cell-count denominator.
+    HM_WEIGHT = 2e-3
     HM_PLAIN_NEG_REL = 0.25   # trivial backgrounds — small contribution
     HM_HARD_NEG_REL = 1.0     # decoy cursors — full weight, primary neg signal
     HM_NEG_REL_LEGACY = 0.5   # used when sample_type is unknown (legacy datasets)
