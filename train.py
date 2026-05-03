@@ -790,7 +790,7 @@ def train_loop(args):
     #     The 2-point line attempt-1 → attempt-2 is not a sweep; v0.7.1
     #     queues a proper {5e-4, 2e-3, 8e-3} grid to confirm 2e-3 is on
     #     the right shoulder.
-    HM_WEIGHT = 2e-3
+    HM_WEIGHT = float(os.environ.get("IPF_HM_WEIGHT", "8e-3"))  # v0.7.1 sweep winner; env override for future A/Bs
     HM_PLAIN_NEG_REL = 0.25   # trivial backgrounds — small contribution
     HM_HARD_NEG_REL = 1.0     # decoy cursors — full weight, primary neg signal
     HM_NEG_REL_LEGACY = 0.5   # used when sample_type is unknown (legacy datasets)

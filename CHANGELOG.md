@@ -2,6 +2,24 @@
 
 All notable changes to ios_pointer_finder are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versioning per `bump.sh` policy (see `CONTRIBUTING.md`).
 
+## [0.7.1] - Unreleased
+
+### Changed
+- **HM_WEIGHT 2e-3 → 8e-3** (calibrated by 3-point log sweep against the same fixed seed: 5e-4 / 2e-3 / 8e-3). Result: 184.7 / 36.1 / 20.8 px best P1 val_pos_err respectively. 8e-3 also lifts the heatmap peak distribution out of v0.7.0's marginal-confidence band — the two real-frame fixtures that previously failed the deployment gate at peak < 0.4 (bg-00007: peak 0.371 → 0.664; bg-00009: peak 0.337 → 0.671) now pass. bg-00009's prediction error also halved (27 px → 14 px) without any architectural change.
+- **PEAK_THRESHOLD 0.5 → 0.4** in `click_at.py`. v0.7's BCE-sum loss bounds positive logits via real gradient pressure from the 8500+ background cells; true-positive peaks now sit ~0.91-0.96 typical (vs v0.4's saturated 1.000), and uncertain frames at ~0.34-0.37. The 0.5 gate was calibrated for the saturated regime and false-negatived all uncertain frames; 0.4 keeps the model's "I'm not confident here" signal as cursor-lost while passing the confident-localization band intact. Note: with HM_WEIGHT=8e-3 the peak distribution shifts higher again, so bg-00007 / bg-00009 now pass at 0.664 / 0.671 — the threshold drop is defensive headroom, not the load-bearing fix.
+
+### Added
+- **Per-epoch backbone-gradient diagnostic** (`train.py: _measure_backbone_grad_ratio`). Logs ‖∂L_h/∂backbone‖ for each head h after every epoch, plus the ratio. Reusable anchor for any future loss-reduction A/B; would have caught v0.7's HM_WEIGHT=2e-5 calibration miss in minutes instead of via a wasted 8 h cold-start. Diagnostic is non-invasive — sets BatchNorm modules to eval mode for the off-path forward so running stats don't drift.
+- **bg-00009 hand-annotated GT** at `tests/fixtures/real/ground_truth.json` (was previously v0.4-bootstrapped). v0.4 was correct on this frame; v0.7.0 errs by 27 px with peak 0.337, v0.7.1 (8e-3) errs by 14 px with peak 0.671.
+- **Soft-gate on bg-00009** (`tests/test_real_frame_eval.py: SOFT_GT_GATES`) at 60 px tolerance. Catches further regressions on this hand-annotated frame without forcing every future model to immediately solve every existing failure mode.
+
+### Fixed
+- `_measure_backbone_grad_ratio` no longer mutates BatchNorm running stats. Initial implementation called `model.train()` before the diagnostic forward, drifting eval statistics on every epoch from off-path data.
+- `eval_v03.py` and `train.py:slice_peak_high` previously hardcoded `peak > 0.5` for false-positive accounting — now updated to track the deployment threshold (0.4) so val-time slice metrics match what would actually leak through `click_at.PEAK_THRESHOLD`.
+- `docs/ARCHITECTURE.md` closed-loop gate description updated to match the new threshold (was `peak ≥ 0.5`).
+- `tests/test_parabolic.py` border tests reframed to assert the v0.7-5 one-sided parabolic behavior (offset in `[-0.5, 0]` at left/top edges, `[0, 0.5]` at right/bottom) instead of the pre-v0.7 default-zero.
+- `tests/test_inference.py` PointerPrediction-unpacks test updated for v0.7-10's 5-field `__iter__` (was 4-field).
+
 ## [0.7.0] - Unreleased
 
 ### Fixed (data integrity — see "What broke" below)
