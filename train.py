@@ -500,6 +500,94 @@ def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
     return target_hm.unsqueeze(1)  # (B, 1, H, W)
 
 
+def _measure_backbone_grad_ratio(
+    model, train_dl, device, hm_weight: float, conf_weight: float,
+    plain_neg_rel: float, hard_neg_rel: float,
+) -> dict | None:
+    """Measure per-head gradient L2 norm at the SHARED BACKBONE.
+
+    Pulls one batch from train_dl, runs forward, computes hm_loss and
+    conf_loss separately, runs two isolated backward passes (zeroing grads
+    between them), and reads ‖∂L_h/∂backbone‖ for each head h.
+
+    Returns ``{'hm': float, 'conf': float, 'ratio': hm/conf}`` or ``None``
+    if no batch is available. The ratio is the actionable signal: ~1.0
+    means heads contribute equal pressure to the shared features; <<1.0
+    means heatmap is starving (HM_WEIGHT too small); >>1.0 means
+    confidence is starving (HM_WEIGHT too large).
+
+    Important: this is a diagnostic, not a training step. The optimizer
+    state is left intact; gradients are zeroed at the end so the next
+    real step starts clean.
+    """
+    try:
+        batch = next(iter(train_dl))
+    except StopIteration:
+        return None
+
+    x, target_xy, target_conf, sample_type = (b.to(device) for b in batch)
+    backbone_params = list(model.backbone.parameters())
+
+    def _grad_norm() -> float:
+        total = 0.0
+        for p in backbone_params:
+            if p.grad is not None:
+                total += float(p.grad.detach().float().norm() ** 2)
+        return total ** 0.5
+
+    was_training = model.training
+    model.train()
+    pred_conf_logit, pred_hm = model(x)
+    H, W = pred_hm.shape[-2:]
+
+    pos_mask = (target_conf == 1).float()
+    plain_mask = (sample_type == SAMPLE_TYPES["plain_neg"]).float()
+    hard_mask = (sample_type == SAMPLE_TYPES["hard_neg"]).float()
+    pos_count = pos_mask.sum().clamp_min(1.0)
+    plain_count = plain_mask.sum().clamp_min(1.0)
+    hard_count = hard_mask.sum().clamp_min(1.0)
+
+    target_hm_pos = make_target_heatmap(target_xy, H, W)
+    target_hm = target_hm_pos * pos_mask.view(-1, 1, 1, 1)
+    hm_loss_per_b = F.binary_cross_entropy_with_logits(
+        pred_hm.squeeze(1), target_hm.squeeze(1), reduction="none"
+    ).sum(dim=(1, 2))
+    hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
+    hm_plain_neg_loss = (hm_loss_per_b * plain_mask).sum() / plain_count
+    hm_hard_neg_loss = (hm_loss_per_b * hard_mask).sum() / hard_count
+    hm_loss = (hm_pos_loss
+               + plain_neg_rel * hm_plain_neg_loss
+               + hard_neg_rel * hm_hard_neg_loss)
+
+    conf_loss = F.binary_cross_entropy_with_logits(pred_conf_logit, target_conf)
+
+    # Isolated backward: hm only.
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad = None
+    (hm_loss * hm_weight).backward(retain_graph=True)
+    hm_grad = _grad_norm()
+
+    # Isolated backward: conf only.
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad = None
+    (conf_loss * conf_weight).backward()
+    conf_grad = _grad_norm()
+
+    # Leave grads zeroed; next training step's opt.zero_grad would do this anyway,
+    # but be defensive.
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad = None
+
+    if not was_training:
+        model.eval()
+
+    ratio = hm_grad / max(conf_grad, 1e-12)
+    return {"hm": hm_grad, "conf": conf_grad, "ratio": ratio}
+
+
 def train_loop(args):
     version = read_version()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -771,6 +859,22 @@ def train_loop(args):
             n_train_plain_neg += int(plain_count.item())
             n_train_hard_neg += int(hard_count.item())
         sched.step()
+
+        # ---- Gradient diagnostic: per-head contribution to BACKBONE gradient ----
+        # Loss-reduction or weight changes that shift the per-head gradient ratio
+        # at the shared backbone are exactly the class of bug v0.7's HM_WEIGHT
+        # calibration miss (attempt 1 = 2e-5) was. Logging the steady-state ratio
+        # each epoch makes the next "lucky 2-point line" surface immediately
+        # instead of via a wasted 8h cold-start. Reusable anchor for any future
+        # loss-reduction A/B (sum vs mean vs focal, label smoothing, etc.).
+        grad_diag = _measure_backbone_grad_ratio(
+            model, train_dl, device, HM_WEIGHT, CONF_WEIGHT,
+            HM_PLAIN_NEG_REL, HM_HARD_NEG_REL,
+        )
+        if grad_diag is not None:
+            print(f"        [grad] hm_grad={grad_diag['hm']:.4f} "
+                  f"conf_grad={grad_diag['conf']:.4f} "
+                  f"ratio={grad_diag['ratio']:.3f} (target ~1.0)")
 
         # ---- Validation: sliced metrics by sample_type ----
         model.eval()
