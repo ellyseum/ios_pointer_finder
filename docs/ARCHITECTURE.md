@@ -47,7 +47,7 @@ It's deliberately not derived from `heatmap.max()`, because the heatmap can
 be locally hot on a cursor-shaped UI element (a notification dot, a Settings
 badge) when no real cursor is present. The conf head, looking at the whole
 image globally, learns to discount these. In practice the two signals are
-complementary; the closed-loop gate is `conf ≥ 0.5 AND heatmap_peak ≥ 0.5`.
+complementary; the closed-loop gate is `conf ≥ 0.5 AND heatmap_peak ≥ 0.4` (v0.7.1; was `≥ 0.5` pre-v0.7. v0.7's calibrated peak distribution sits lower than v0.4's saturated regime — see `click_at.PEAK_THRESHOLD` rationale).
 
 ### Tiny backbone
 

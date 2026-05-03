@@ -125,7 +125,7 @@ def evaluate_on_dir(model: PointerNet, paths: list[str], device: torch.device,
         "mean_err_px": float(np.mean(errs)) if errs else None,
         "max_peak": float(np.max(peaks)) if peaks else None,
         "frac_conf_gt05": float(np.mean([c > 0.5 for c in confs])) if confs else None,
-        "frac_peak_gt05": float(np.mean([p > 0.5 for p in peaks])) if peaks else None,
+        "frac_peak_gt_thresh": float(np.mean([p > 0.4 for p in peaks])) if peaks else None,  # tracks click_at.PEAK_THRESHOLD (v0.7.1: 0.4)
     }
     return {"summary": summary, "results": results}
 
@@ -177,7 +177,7 @@ def main() -> int:
             print(f"  {tag:13s}  n={s['n']:3d}  "
                   f"conf_mean={s['mean_conf']:.3f}  peak_mean={s['mean_peak']:.3f}  "
                   f"%conf>0.5={s['frac_conf_gt05']*100:5.1f}%  "
-                  f"%peak>0.5={s['frac_peak_gt05']*100:5.1f}%"
+                  f"%peak>0.4={s['frac_peak_gt_thresh']*100:5.1f}%"
                   + (f"  err_mean={s['mean_err_px']:.1f}px" if s['mean_err_px'] is not None else ""))
         rows.append({"model": label, "real": real_res["summary"], "free": free_res["summary"],
                      "details": {"real": real_res["results"], "free": free_res["results"]}})
