@@ -58,17 +58,17 @@ TRAIN_W, TRAIN_H = 497, 1080
 DEFAULT_TOLERANCE = 15        # native px; click fires when |delta| < this
 DEFAULT_MAX_ITERS = 12
 CONF_THRESHOLD = 0.5          # below this, treat as cursor-lost
-PEAK_THRESHOLD = 0.3          # heatmap peak prob; below this, also lost.
-                              # v0.7.1: dropped from 0.5 → 0.3. v0.4's mean-BCE
+PEAK_THRESHOLD = 0.4          # heatmap peak prob; below this, also lost.
+                              # v0.7.1: dropped from 0.5 → 0.4 to match v0.7's
+                              # calibrated peak distribution. v0.4's mean-BCE
                               # left positive logits unbounded → peaks saturated
-                              # at 1.000; v0.7's sum-BCE has bounded background
-                              # gradients that hold positive cell logits in a
-                              # range producing peaks ~0.91 typical / ~0.34 on
-                              # harder frames. The 0.5 threshold was calibrated
-                              # for the saturated regime and false-negatived 2/8
-                              # real fixtures with the v0.7 16.5px ckpt; 0.3
-                              # restores the gate's intent (low-confidence-only
-                              # cutoff) without changing its semantics.
+                              # at 1.000; v0.7's sum-BCE bounds them, so true-
+                              # positive peaks now sit ~0.91 typical and
+                              # uncertain frames at ~0.33-0.37. The previous
+                              # 0.5 gate false-negatived all uncertain frames;
+                              # 0.4 keeps the model's "I'm not confident here"
+                              # signal as cursor-lost while passing the
+                              # confident-localization band intact.
 WAIT_FRAME_TIMEOUT_S = 0.6
 SETTLE_BEFORE_CLICK_S = 0.05  # let the last move quiesce before firing
 PIPELINE_STALE_S = 3.0        # newest frame older than this → pipeline dead

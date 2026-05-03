@@ -535,8 +535,23 @@ def _measure_backbone_grad_ratio(
                 total += float(p.grad.detach().float().norm() ** 2)
         return total ** 0.5
 
+    # Diagnostic must not mutate model state. BatchNorm in train mode
+    # updates running_mean/running_var on every forward; doing that with
+    # an off-path batch each epoch drifts eval statistics. Set BN modules
+    # to eval mode (running stats frozen, gradients still flow) for the
+    # forward; restore originals afterward.
+    bn_was_training = []
+    for m in model.modules():
+        if isinstance(m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
+            bn_was_training.append((m, m.training))
+            m.eval()
     was_training = model.training
-    model.train()
+    if not was_training:
+        # Re-enter train mode so dropout / other train-only paths run as
+        # they would during normal training, but BN stays frozen.
+        model.train()
+        for m, _ in bn_was_training:
+            m.eval()
     pred_conf_logit, pred_hm = model(x)
     H, W = pred_hm.shape[-2:]
 
@@ -583,6 +598,10 @@ def _measure_backbone_grad_ratio(
 
     if not was_training:
         model.eval()
+    # Restore original BN train/eval states.
+    for m, was in bn_was_training:
+        if was:
+            m.train()
 
     ratio = hm_grad / max(conf_grad, 1e-12)
     return {"hm": hm_grad, "conf": conf_grad, "ratio": ratio}
@@ -882,7 +901,13 @@ def train_loop(args):
         slice_err_n: dict[int, int] = {}
         slice_fpr_pred: dict[int, int] = {}   # how many predicted positive (conf > 0.5)
         slice_fpr_n: dict[int, int] = {}
-        slice_peak_high: dict[int, int] = {}  # how many had heatmap peak > 0.5
+        # Tracks how many cells exceed the deployment peak threshold — i.e.,
+        # negatives that would leak through click_at.PEAK_THRESHOLD as
+        # potential false positives. Kept in sync with click_at.py so val
+        # logs reflect deployment-relevant FPR. (v0.7.1: was 0.5; updated
+        # alongside the click_at gate retune.)
+        PEAK_FPR_THRESHOLD = 0.4
+        slice_peak_high: dict[int, int] = {}  # how many negs had heatmap peak > PEAK_FPR_THRESHOLD
         with torch.no_grad():
             val_conf_correct = 0; n_val = 0
             for x, target_xy, target_conf, sample_type in val_dl:
@@ -928,12 +953,12 @@ def train_loop(args):
                         if neg_sel.any():
                             slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[neg_sel].sum().item())
                             slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(neg_sel.sum().item())
-                            slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[neg_sel] > 0.5).sum().item())
+                            slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[neg_sel] > PEAK_FPR_THRESHOLD).sum().item())
                     else:
                         # Negative slice (hard_neg / plain_neg): count false positives
                         slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[sel].sum().item())
                         slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(sel.sum().item())
-                        slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[sel] > 0.5).sum().item())
+                        slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[sel] > PEAK_FPR_THRESHOLD).sum().item())
 
         dt = time.monotonic() - t0
         all_err_sum = sum(slice_err_sum.values()); all_err_n = sum(slice_err_n.values())
