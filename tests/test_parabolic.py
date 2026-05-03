@@ -47,29 +47,41 @@ def test_classic_quadratic_offset():
     assert abs(off - (1.0 / 6.0)) < 1e-6
 
 
-def test_left_border_returns_zero():
-    """Argmax on the left column has no a-neighbor — offset must default to 0."""
+def test_left_border_one_sided():
+    """v0.7-5 one-sided parabolic at the left edge.
+
+    Argmax at column 0 with neighbors (1, 0, 0): the implied peak lies at
+    or beyond the heatmap boundary. Clamps to [-0.5, 0] (peak cannot be
+    *inside* the heatmap or cell 1 would have been argmax). For this
+    monotonic-descent input the parabola vertex is clamped to 0.
+    """
     hm = np.zeros((5, 5), dtype=np.float32)
     hm[2, 0] = 1.0
-    assert _parabolic_offset(hm, 0, 2, "x") == 0.0
+    off = _parabolic_offset(hm, 0, 2, "x")
+    assert -0.5 <= off <= 0.0, f"left-edge offset must be in [-0.5, 0], got {off}"
 
 
-def test_right_border_returns_zero():
+def test_right_border_one_sided():
+    """Argmax at column W-1 with neighbors (0, 0, 1): peak is at or beyond
+    the right edge. Clamps to [0, 0.5]; this monotonic input lands at 0.5."""
     hm = np.zeros((5, 5), dtype=np.float32)
     hm[2, 4] = 1.0
-    assert _parabolic_offset(hm, 4, 2, "x") == 0.0
+    off = _parabolic_offset(hm, 4, 2, "x")
+    assert 0.0 <= off <= 0.5, f"right-edge offset must be in [0, 0.5], got {off}"
 
 
-def test_top_border_y_axis_returns_zero():
+def test_top_border_y_axis_one_sided():
     hm = np.zeros((5, 5), dtype=np.float32)
     hm[0, 2] = 1.0
-    assert _parabolic_offset(hm, 2, 0, "y") == 0.0
+    off = _parabolic_offset(hm, 2, 0, "y")
+    assert -0.5 <= off <= 0.0, f"top-edge y offset must be in [-0.5, 0], got {off}"
 
 
-def test_bottom_border_y_axis_returns_zero():
+def test_bottom_border_y_axis_one_sided():
     hm = np.zeros((5, 5), dtype=np.float32)
     hm[4, 2] = 1.0
-    assert _parabolic_offset(hm, 2, 4, "y") == 0.0
+    off = _parabolic_offset(hm, 2, 4, "y")
+    assert 0.0 <= off <= 0.5, f"bottom-edge y offset must be in [0, 0.5], got {off}"
 
 
 def test_flat_heatmap_returns_zero():

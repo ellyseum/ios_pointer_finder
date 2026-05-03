@@ -41,6 +41,14 @@ EXPECTED_FRAMES = [
 HARD_GT_FRAME = "bg-00000.png"
 HARD_GT_TOLERANCE_PX = 50.0
 
+# Soft regression gates for additional hand-annotated fixtures. Generous
+# tolerances catch *further* regressions without forcing v0.7.1 to solve
+# every existing failure mode. v0.7 16.5px ckpt errs by 27 px on bg-00009;
+# 60 px lets that through but flags any future drift past it.
+SOFT_GT_GATES = {
+    "bg-00009.png": 60.0,
+}
+
 
 def _find_checkpoint() -> Path | None:
     """Locate a checkpoint to test against. Order: pointer_model.pt
@@ -115,6 +123,34 @@ def test_bg_00000_within_hard_gate(predictions, gt):
         f"{HARD_GT_FRAME} pred=({p[0]:.1f},{p[1]:.1f}) "
         f"gt=({g['x']},{g['y']}) err={err:.1f}px > {HARD_GT_TOLERANCE_PX}px "
         f"(checkpoint={predictions['checkpoint']})"
+    )
+
+
+def test_soft_regression_gates(predictions, gt):
+    """Generous-tolerance hard-gates for additional hand-annotated frames.
+
+    Catches regressions past the current known-bad state without forcing
+    every future model to solve every existing failure mode. v0.7.1 known
+    state: bg-00009 = 27 px error. Gate at 60 px catches drift past that.
+    """
+    failures = []
+    for frame, tol in SOFT_GT_GATES.items():
+        if frame not in predictions["preds"]:
+            continue
+        p = predictions["preds"][frame]
+        g = gt[frame]
+        if g.get("source") != "hand":
+            continue  # only gate on hand-annotated frames
+        err = ((p[0] - g["x"]) ** 2 + (p[1] - g["y"]) ** 2) ** 0.5
+        if err > tol:
+            failures.append(
+                f"{frame} pred=({p[0]:.1f},{p[1]:.1f}) "
+                f"gt=({g['x']},{g['y']}) err={err:.1f}px > {tol}px"
+            )
+    assert not failures, (
+        "soft regression gates exceeded:\n  "
+        + "\n  ".join(failures)
+        + f"\n  (checkpoint={predictions['checkpoint']})"
     )
 
 

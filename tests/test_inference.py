@@ -36,15 +36,18 @@ def random_finder(tmp_path: Path) -> PointerFinder:
 
 
 def test_prediction_dataclass_unpacks(random_finder: PointerFinder, native_size):
-    """PointerPrediction should be iterable as (x, y, conf, peak)."""
+    """PointerPrediction should be iterable as (x, y, conf, peak, native_size).
+    v0.7-10 added native_size as the 5th yielded field (was previously dropped
+    silently, surprising tuple-unpack callers)."""
     img = np.zeros((native_size[1], native_size[0], 3), dtype=np.uint8)
     pred = random_finder(img)
     assert isinstance(pred, PointerPrediction)
-    x, y, c, p = pred
+    x, y, c, p, ns = pred
     assert isinstance(x, int) and isinstance(y, int)
     assert isinstance(c, float) and isinstance(p, float)
     assert 0.0 <= c <= 1.0
     assert 0.0 <= p <= 1.0
+    assert isinstance(ns, tuple) and len(ns) == 2
 
 
 def test_prediction_in_native_bounds(random_finder: PointerFinder, native_size):
