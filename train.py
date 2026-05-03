@@ -657,27 +657,32 @@ def train_loop(args):
 
     # Loss weights (v0.7).
     #
-    # v0.7-7b: heatmap BCE switched to .sum(dim=(2,3)) — see hm_loss_per_b
+    # v0.7-7b: heatmap BCE switched to .sum(dim=(1,2)) — see hm_loss_per_b
     # below. Pre-v0.7 used .mean(dim=(1,2)) over 8505 cells, which made the
     # effective per-positive-cell heatmap gradient ~1400× weaker than the
     # confidence head's gradient (the model learned 'is something here'
     # fast and 'where exactly' slowly).
     #
     # HM_WEIGHT calibration history:
-    #   - 2e-5: chosen by per-head gradient-norm balance at fresh init
-    #     (25 steps from random weights). Failed in practice — Cold-Start
-    #     #1 P1 stalled at 300 px val_pos_err vs v0.6.2's 36.7 at the same
-    #     point. The fresh-init metric biased toward over-suppressing the
-    #     heatmap path because BCE-sum gradient is huge at random init
-    #     (model uniformly predicts ~0.5 on 8505 cells against a target
-    #     that is 0 almost everywhere).
-    #   - 2e-3 (current): chosen by total-loss-contribution match. Pre-v0.7
-    #     mean-form had hm_loss × HM_WEIGHT ≈ 0.18 early (13% of total);
-    #     2e-3 × sum-form hm_loss (~80) = 0.16 early (14% of total). This
-    #     puts the optimizer in the same total-objective regime as v0.4
-    #     (which hit 22.9 px on procedural disc) while preserving the
-    #     v0.7 fix that the per-cell gradient is no longer diluted by the
-    #     8505× cell-count denominator.
+    #   - 2e-5 (rejected): chosen by per-head gradient-norm balance at
+    #     fresh init (25 steps from random weights). Failed empirically —
+    #     P1 stalled at 300 px val_pos_err vs v0.6.2's 36.7 at the same
+    #     point. At fresh init every cell's logit is ≈ 0, so BCE per cell
+    #     ≈ log(2) ≈ 0.69 regardless of target; sum over 8505 cells gives
+    #     hm_loss ≈ 5893 per sample. Matching gradient norms at that
+    #     anomalously-large state biases the calibration toward an
+    #     over-small weight that under-trains the heatmap path once
+    #     background cells suppress and the loss collapses.
+    #   - 2e-3 (current): the floor "naively-equivalent" weight is
+    #     10 / 8505 ≈ 1.2e-3 (preserves pre-v0.7 mean-form per-cell
+    #     gradient magnitude exactly). 2e-3 sits modestly above that
+    #     floor — keeps v0.4-baseline-compatible total-loss contribution
+    #     in late training (~14% of total once background cells suppress),
+    #     while early training is HM-dominated (~89% of total at random
+    #     init, since BCE-sum is huge before the model learns to suppress).
+    #     The 2-point line attempt-1 → attempt-2 is not a sweep; v0.7.1
+    #     queues a proper {5e-4, 2e-3, 8e-3} grid to confirm 2e-3 is on
+    #     the right shoulder.
     HM_WEIGHT = 2e-3
     HM_PLAIN_NEG_REL = 0.25   # trivial backgrounds — small contribution
     HM_HARD_NEG_REL = 1.0     # decoy cursors — full weight, primary neg signal

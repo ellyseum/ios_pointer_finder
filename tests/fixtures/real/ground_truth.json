@@ -1,5 +1,5 @@
 {
-  "_doc": "Ground truth for real-frame regression fixtures. bg-00000 is hand-annotated; others are bootstrapped from v0.4.0 22.9px predictions (\u00b1~25px expected).",
+  "_doc": "Ground truth for real-frame regression fixtures. bg-00000 and bg-00009 are hand-annotated; others remain bootstrapped from v0.4.0 22.9px predictions (~1-3px noise expected since v0.4 returns identical predictions on the parked-cursor frames). v0.7.1 should hand-annotate the remaining 6 + add positional-diversity fixtures.",
   "_source_weights": "pointer_model_v0.4.0_22.9px.pt",
   "frames": {
     "bg-00000.png": {
@@ -57,11 +57,12 @@
       "source": "v0.4-bootstrap"
     },
     "bg-00009.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 654,
+      "y": 1431,
       "confidence": 0.9971617460250854,
       "heatmap_peak": 0.999998927116394,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed (654, 1431) post-v0.7-eval \u2014 v0.4 prediction was correct; v0.7 16.5px ckpt errs by 27px here with low peak (0.337) indicating model uncertainty. Real v0.7 failure mode; queue for v0.7.1 investigation."
     }
   }
 }
