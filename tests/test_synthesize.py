@@ -41,7 +41,9 @@ def test_synthesize_runs_on_synthetic_bgs(tmp_path: Path, monkeypatch):
     # the CLI args we emulate here.
     import sys
 
-    argv = ["synthesize.py", "--out", str(out_dir), "--n", "20"]
+    # v0.5+ CLI: --out-dir replaces --out, --per-bg replaces --n.
+    # 7 samples per bg × 4 bgs = 28 samples (edge_pos rejection may shave a few).
+    argv = ["synthesize.py", "--out-dir", str(out_dir), "--per-bg", "7"]
     monkeypatch.setattr(sys, "argv", argv)
 
     if hasattr(synthesize, "main"):
@@ -55,7 +57,9 @@ def test_synthesize_runs_on_synthetic_bgs(tmp_path: Path, monkeypatch):
     with open(labels_path) as f:
         labels = [json.loads(line) for line in f if line.strip()]
 
-    assert len(labels) == 20
+    # Allow a tolerance band: per-bg=7 × 4 bgs = 28 expected, but edge_pos
+    # rejection can shave a few.
+    assert 22 <= len(labels) <= 28, f"expected 22-28 labels, got {len(labels)}"
 
     # Schema check
     required = {"path", "x", "y", "has_cursor", "sample_type", "bg_id"}
@@ -86,7 +90,7 @@ def test_synthesize_label_balance(tmp_path: Path, monkeypatch):
 
     import sys
 
-    monkeypatch.setattr(sys, "argv", ["synthesize.py", "--out", str(out_dir), "--n", "100"])
+    monkeypatch.setattr(sys, "argv", ["synthesize.py", "--out-dir", str(out_dir), "--per-bg", "33"])
     if not hasattr(synthesize, "main"):
         pytest.skip("synthesize.py has no main()")
     synthesize.main()
