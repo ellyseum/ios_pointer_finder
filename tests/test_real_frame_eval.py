@@ -18,6 +18,7 @@ band without representing a regression.
 Skipped when no checkpoint is available — this is a regression gate,
 not a unit test that must always pass.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,8 +35,14 @@ FIXTURE_DIR = REPO / "tests" / "fixtures" / "real"
 GT_PATH = FIXTURE_DIR / "ground_truth.json"
 
 EXPECTED_FRAMES = [
-    "bg-00000.png", "bg-00001.png", "bg-00002.png", "bg-00005.png",
-    "bg-00006.png", "bg-00007.png", "bg-00008.png", "bg-00009.png",
+    "bg-00000.png",
+    "bg-00001.png",
+    "bg-00002.png",
+    "bg-00005.png",
+    "bg-00006.png",
+    "bg-00007.png",
+    "bg-00008.png",
+    "bg-00009.png",
 ]
 
 HARD_GT_FRAME = "bg-00000.png"
@@ -62,8 +69,12 @@ def _find_checkpoint() -> Path | None:
         if c.exists():
             return c
     # Fall back to any v0.4+ weights present
-    for pat in ("pointer_model_v0.7*.pt", "pointer_model_v0.6*.pt",
-                "pointer_model_v0.5*.pt", "pointer_model_v0.4*.pt"):
+    for pat in (
+        "pointer_model_v0.7*.pt",
+        "pointer_model_v0.6*.pt",
+        "pointer_model_v0.5*.pt",
+        "pointer_model_v0.4*.pt",
+    ):
         matches = sorted(REPO.glob(pat))
         if matches:
             return matches[0]
@@ -84,14 +95,14 @@ def predictions():
     if ckpt is None:
         pytest.skip("no checkpoint available; real-frame eval needs trained weights")
     from inference import PointerFinder
+
     finder = PointerFinder(ckpt)
     preds = {}
     for name in EXPECTED_FRAMES:
         fp = FIXTURE_DIR / name
         assert fp.exists(), f"fixture missing: {fp}"
         p = finder.predict(str(fp))
-        preds[name] = (float(p.x), float(p.y), float(p.confidence),
-                       float(p.heatmap_peak))
+        preds[name] = (float(p.x), float(p.y), float(p.confidence), float(p.heatmap_peak))
     return {"checkpoint": ckpt.name, "preds": preds}
 
 
@@ -100,9 +111,7 @@ def test_fixture_count_is_eight():
     pre-v0.7 silent dead-eval bug.
     """
     found = sorted(p.name for p in FIXTURE_DIR.glob("bg-*.png"))
-    assert found == EXPECTED_FRAMES, (
-        f"expected exactly 8 fixture frames, got {len(found)}: {found}"
-    )
+    assert found == EXPECTED_FRAMES, f"expected exactly 8 fixture frames, got {len(found)}: {found}"
 
 
 def test_ground_truth_covers_all_fixtures(gt):
@@ -156,6 +165,7 @@ def test_soft_regression_gates(predictions, gt):
 
 def test_all_predictions_finite(predictions):
     import math
+
     for name, (x, y, conf, peak) in predictions["preds"].items():
         assert all(math.isfinite(v) for v in (x, y, conf, peak)), (
             f"{name}: non-finite prediction {(x, y, conf, peak)}"
@@ -177,8 +187,7 @@ def test_log_v04_drift_signal(predictions, gt, capsys):
         err = ((x - g["x"]) ** 2 + (y - g["y"]) ** 2) ** 0.5
         pred_str = f"({x:.1f},{y:.1f})"
         gt_str = f"({g['x']:.1f},{g['y']:.1f})"
-        print(f"  {name:<18} {pred_str:<24} {gt_str:<24} {err:>7.1f}  "
-              f"{g['source']}")
+        print(f"  {name:<18} {pred_str:<24} {gt_str:<24} {err:>7.1f}  {g['source']}")
 
 
 if __name__ == "__main__":

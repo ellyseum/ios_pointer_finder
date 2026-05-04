@@ -26,10 +26,9 @@ import sys
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from train import PointerNet, NATIVE_W, NATIVE_H, TRAIN_W, TRAIN_H
+from train import NATIVE_H, NATIVE_W, TRAIN_H, TRAIN_W, PointerNet
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TEST_DIR = os.path.join(ROOT, "real_pointer_test")
@@ -45,8 +44,9 @@ def preprocess(img_bgr: np.ndarray) -> torch.Tensor:
     return x.unsqueeze(0)
 
 
-def heatmap_to_bbox(hm_logits: torch.Tensor, native_w: int, native_h: int,
-                    rel_thresh: float = 0.5) -> tuple[tuple[int, int, int, int], tuple[int, int], float]:
+def heatmap_to_bbox(
+    hm_logits: torch.Tensor, native_w: int, native_h: int, rel_thresh: float = 0.5
+) -> tuple[tuple[int, int, int, int], tuple[int, int], float]:
     """
     Returns:
       bbox: (x, y, w, h) in native pixels of largest CC above thresh
@@ -59,9 +59,11 @@ def heatmap_to_bbox(hm_logits: torch.Tensor, native_w: int, native_h: int,
     `center` is now decoded canonically rather than from the upsampled grid.
     """
     from decode import argmax_parabolic_native
+
     logits = hm_logits[0, 0].cpu().numpy()
-    prob_full = cv2.resize(1.0 / (1.0 + np.exp(-logits)),
-                          (native_w, native_h), interpolation=cv2.INTER_LINEAR)
+    prob_full = cv2.resize(
+        1.0 / (1.0 + np.exp(-logits)), (native_w, native_h), interpolation=cv2.INTER_LINEAR
+    )
     peak = float(prob_full.max())
 
     # Canonical center: argmax + parabolic on logits + stride-aware decode.
@@ -77,7 +79,12 @@ def heatmap_to_bbox(hm_logits: torch.Tensor, native_w: int, native_h: int,
     if peak_lbl == 0:
         peak_lbl = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     s = stats[peak_lbl]
-    x, y, w, h = s[cv2.CC_STAT_LEFT], s[cv2.CC_STAT_TOP], s[cv2.CC_STAT_WIDTH], s[cv2.CC_STAT_HEIGHT]
+    x, y, w, h = (
+        s[cv2.CC_STAT_LEFT],
+        s[cv2.CC_STAT_TOP],
+        s[cv2.CC_STAT_WIDTH],
+        s[cv2.CC_STAT_HEIGHT],
+    )
     return (int(x), int(y), int(w), int(h)), (cx_native, cy_native), peak
 
 
@@ -86,8 +93,12 @@ def main() -> int:
     p.add_argument("--weights", default="/tmp/pointer_model_ep28.pt")
     p.add_argument("--test-dir", default=TEST_DIR)
     p.add_argument("--out-dir", default=OUT_DIR)
-    p.add_argument("--rel-thresh", type=float, default=0.5,
-                   help="bbox = pixels where heatmap >= peak * rel_thresh")
+    p.add_argument(
+        "--rel-thresh",
+        type=float,
+        default=0.5,
+        help="bbox = pixels where heatmap >= peak * rel_thresh",
+    )
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
 
@@ -99,6 +110,7 @@ def main() -> int:
     model = PointerNet().to(device).eval()
     if suffix == ".safetensors":
         from safetensors.torch import load_file
+
         model.load_state_dict(load_file(args.weights))
         sidecar = os.path.splitext(args.weights)[0] + ".config.json"
         ckpt = {}
@@ -114,7 +126,9 @@ def main() -> int:
 
     frames = sorted(glob.glob(os.path.join(args.test_dir, "*.png")))
     print(f"frames: {len(frames)}\n")
-    print(f"{'frame':<18}  {'peak':>5}  {'conf':>5}  {'bbox(x,y,w,h)':>22}  {'center':>14}  {'gt':>14}")
+    print(
+        f"{'frame':<18}  {'peak':>5}  {'conf':>5}  {'bbox(x,y,w,h)':>22}  {'center':>14}  {'gt':>14}"
+    )
     print("-" * 95)
 
     for fp in frames:
@@ -128,7 +142,9 @@ def main() -> int:
         bbox, center, peak = heatmap_to_bbox(hm, NATIVE_W, NATIVE_H, rel_thresh=args.rel_thresh)
         name = os.path.basename(fp)
         gt = GT.get(name)
-        print(f"{name:<18}  {peak:>5.3f}  {conf:>5.3f}  {str(bbox):>22}  {str(center):>14}  {str(gt):>14}")
+        print(
+            f"{name:<18}  {peak:>5.3f}  {conf:>5.3f}  {str(bbox):>22}  {str(center):>14}  {str(gt):>14}"
+        )
 
         # Draw bbox on copy of image
         out = img.copy()
@@ -146,28 +162,40 @@ def main() -> int:
         # Crop view: 300x300 around center, scaled 2x for clarity
         cx, cy = center
         s = 200
-        cx0 = max(0, cx - s); cy0 = max(0, cy - s)
-        cx1 = min(NATIVE_W, cx + s); cy1 = min(NATIVE_H, cy + s)
+        cx0 = max(0, cx - s)
+        cy0 = max(0, cy - s)
+        cx1 = min(NATIVE_W, cx + s)
+        cy1 = min(NATIVE_H, cy + s)
         crop = out[cy0:cy1, cx0:cx1].copy()
-        crop = cv2.resize(crop, (crop.shape[1] * 2, crop.shape[0] * 2), interpolation=cv2.INTER_NEAREST)
+        crop = cv2.resize(
+            crop, (crop.shape[1] * 2, crop.shape[0] * 2), interpolation=cv2.INTER_NEAREST
+        )
 
         # Side-by-side: full image (half size) | zoom crop (2x of 400x400 region)
-        full_half = cv2.resize(out, (out.shape[1] // 2, out.shape[0] // 2),
-                                interpolation=cv2.INTER_AREA)
+        full_half = cv2.resize(
+            out, (out.shape[1] // 2, out.shape[0] // 2), interpolation=cv2.INTER_AREA
+        )
         # Pad crop to match height of full_half
         target_h = full_half.shape[0]
         if crop.shape[0] != target_h:
             pad_top = (target_h - crop.shape[0]) // 2 if crop.shape[0] < target_h else 0
             pad_bot = target_h - crop.shape[0] - pad_top if crop.shape[0] < target_h else 0
             if pad_top + pad_bot > 0:
-                crop = cv2.copyMakeBorder(crop, pad_top, pad_bot, 0, 0,
-                                          cv2.BORDER_CONSTANT, value=(40, 40, 40))
+                crop = cv2.copyMakeBorder(
+                    crop, pad_top, pad_bot, 0, 0, cv2.BORDER_CONSTANT, value=(40, 40, 40)
+                )
             elif crop.shape[0] > target_h:
-                crop = cv2.resize(crop, (int(crop.shape[1] * target_h / crop.shape[0]), target_h),
-                                  interpolation=cv2.INTER_AREA)
+                crop = cv2.resize(
+                    crop,
+                    (int(crop.shape[1] * target_h / crop.shape[0]), target_h),
+                    interpolation=cv2.INTER_AREA,
+                )
         sxs = np.hstack([full_half, crop])
-        cv2.imwrite(os.path.join(args.out_dir, name.replace(".png", "_bbox.jpg")),
-                    sxs, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        cv2.imwrite(
+            os.path.join(args.out_dir, name.replace(".png", "_bbox.jpg")),
+            sxs,
+            [cv2.IMWRITE_JPEG_QUALITY, 92],
+        )
 
     print(f"\nwrote → {args.out_dir}")
     return 0

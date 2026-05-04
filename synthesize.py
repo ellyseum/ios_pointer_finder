@@ -59,8 +59,15 @@ CURSOR_EDGE_FALLOFF = 0.10
 MIN_VISIBLE_FRAC = 0.20
 
 # Hard-negative decoy types
-HARD_NEG_TYPES = ["wrong_size_disc", "wrong_alpha_disc", "ring",
-                  "ellipse", "doubled_dot", "ibeam", "wedge"]
+HARD_NEG_TYPES = [
+    "wrong_size_disc",
+    "wrong_alpha_disc",
+    "ring",
+    "ellipse",
+    "doubled_dot",
+    "ibeam",
+    "wedge",
+]
 
 
 # ============================================================
@@ -75,8 +82,7 @@ HARD_NEG_TYPES = ["wrong_size_disc", "wrong_alpha_disc", "ring",
 # pixel-inspecting the file; loss curves descended cleanly on the wrong
 # target. See CHANGELOG entry for v0.7.0.
 
-SPRITE_PATH = os.environ.get("IPF_SPRITE_PATH",
-                             os.path.join(ROOT, "sprites", "at_dot.png"))
+SPRITE_PATH = os.environ.get("IPF_SPRITE_PATH", os.path.join(ROOT, "sprites", "at_dot.png"))
 
 _REAL_SPRITE: tuple[np.ndarray, tuple[float, float]] | None = None
 
@@ -138,35 +144,33 @@ def _load_real_sprite() -> tuple[np.ndarray, tuple[float, float]] | None:
 
     img = cv2.imread(SPRITE_PATH, cv2.IMREAD_UNCHANGED)
     if img is None or img.ndim != 3 or img.shape[2] != 4:
-        raise RuntimeError(
-            f"Sprite at {SPRITE_PATH} is not a valid RGBA PNG."
-        )
+        raise RuntimeError(f"Sprite at {SPRITE_PATH} is not a valid RGBA PNG.")
     alpha = img[:, :, 3].astype(np.float32) / 255.0
     h, w = alpha.shape
     yy, xx = np.indices((h, w), dtype=np.float32)
     total = float(alpha.sum())
     if total < 1e-6:
         raise RuntimeError(
-            f"Sprite at {SPRITE_PATH} has zero alpha mass — fully transparent "
-            f"or corrupted."
+            f"Sprite at {SPRITE_PATH} has zero alpha mass — fully transparent or corrupted."
         )
     hx = float((alpha * xx).sum() / total)
     hy = float((alpha * yy).sum() / total)
     _REAL_SPRITE = (alpha, (hx, hy))
-    print(f"  [sprite] loaded approved sprite {SPRITE_PATH} "
-          f"(approved-by: {approved_by})")
+    print(f"  [sprite] loaded approved sprite {SPRITE_PATH} (approved-by: {approved_by})")
     return _REAL_SPRITE
 
 
-def make_pointer_mask(diameter: int = 46,
-                     peak_alpha: float = CURSOR_ALPHA_PEAK,
-                     edge_falloff: float = CURSOR_EDGE_FALLOFF) -> np.ndarray:
+def make_pointer_mask(
+    diameter: int = 46,
+    peak_alpha: float = CURSOR_ALPHA_PEAK,
+    edge_falloff: float = CURSOR_EDGE_FALLOFF,
+) -> np.ndarray:
     """Procedural anti-aliased disc. Used as a fallback when the real sprite
     can't be loaded, and for hard-negative decoy generation."""
     r = diameter / 2.0
-    yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing='ij')
+    yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing="ij")
     cy = cx = (diameter - 1) / 2.0
-    dist = np.sqrt((yy - cy)**2 + (xx - cx)**2)
+    dist = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
     inner = r * (1.0 - edge_falloff)
     t = np.clip((r - dist) / (r - inner + 1e-6), 0.0, 1.0)
     alpha = t * t * (3.0 - 2.0 * t)  # smoothstep
@@ -190,8 +194,7 @@ def make_pointer_sprite(diameter: int) -> tuple[np.ndarray, tuple[float, float]]
         return alpha, (c, c)
     src_alpha, _ = real
     # Resize to target diameter (square).
-    resized = cv2.resize(src_alpha, (diameter, diameter),
-                        interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(src_alpha, (diameter, diameter), interpolation=cv2.INTER_LINEAR)
     # Renormalize peak to match CURSOR_ALPHA_PEAK so the contrast math in
     # pick_cursor_color() stays correct against the legacy reference. Scale
     # by the RESIZED peak (not src_peak) — INTER_LINEAR resampling drops the
@@ -218,6 +221,7 @@ def make_pointer_sprite(diameter: int) -> tuple[np.ndarray, tuple[float, float]]
 # Hard-negative (decoy cursor) sprite generators
 # ============================================================
 
+
 def make_decoy_wrong_size(scale: float | None = None) -> np.ndarray:
     """Disc with wrong diameter — too small (~25 px) or too big (~75 px).
     Same color/alpha logic, just wrong size."""
@@ -239,9 +243,9 @@ def make_decoy_ring(diameter: int | None = None) -> np.ndarray:
     if diameter is None:
         diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX + 8)
     r = diameter / 2.0
-    yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing='ij')
+    yy, xx = np.meshgrid(np.arange(diameter), np.arange(diameter), indexing="ij")
     cy = cx_ = (diameter - 1) / 2.0
-    dist = np.sqrt((yy - cy)**2 + (xx - cx_)**2)
+    dist = np.sqrt((yy - cy) ** 2 + (xx - cx_) ** 2)
     ring_w = random.randint(4, 8)
     inner_r = max(2, r - ring_w)
     in_outer = (dist <= r).astype(np.float32)
@@ -256,9 +260,11 @@ def make_decoy_ellipse() -> np.ndarray:
     h = random.randint(CURSOR_PX_MIN - 4, CURSOR_PX_MAX + 4)
     aspect = random.uniform(1.4, 2.2)
     w = int(round(h * aspect))
-    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
-    cy = (h - 1) / 2.0; cx_ = (w - 1) / 2.0
-    rx = w / 2.0; ry = h / 2.0
+    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+    cy = (h - 1) / 2.0
+    cx_ = (w - 1) / 2.0
+    rx = w / 2.0
+    ry = h / 2.0
     dist_n = ((yy - cy) / max(1.0, ry)) ** 2 + ((xx - cx_) / max(1.0, rx)) ** 2
     inner = (1.0 - 0.10) ** 2
     t = np.clip((1.0 - dist_n) / (1.0 - inner + 1e-6), 0.0, 1.0)
@@ -276,7 +282,7 @@ def make_decoy_doubled_dot() -> np.ndarray:
     dot = make_pointer_mask(diameter=d_each, peak_alpha=CURSOR_ALPHA_PEAK)
     # Dot is square (d_each x d_each); paste at left and right
     canvas[:, :d_each] = dot
-    canvas[:, d_each + gap:d_each + gap + d_each] = dot * random.uniform(0.6, 1.0)
+    canvas[:, d_each + gap : d_each + gap + d_each] = dot * random.uniform(0.6, 1.0)
     return canvas
 
 
@@ -285,7 +291,7 @@ def make_decoy_ibeam() -> np.ndarray:
     h = random.randint(36, 56)
     w = random.randint(3, 6)
     canvas = np.zeros((h, w + 6), dtype=np.float32)
-    canvas[:, 3:3 + w] = 1.0
+    canvas[:, 3 : 3 + w] = 1.0
     if random.random() < 0.4:
         # add caps
         cap_h = max(1, h // 14)
@@ -302,12 +308,12 @@ def make_decoy_wedge() -> np.ndarray:
     h = random.randint(24, 44)
     w = h
     canvas = np.zeros((h, w), dtype=np.float32)
-    direction = random.choice(['left', 'right', 'up', 'down'])
+    direction = random.choice(["left", "right", "up", "down"])
     pts = {
-        'left':  np.array([[w-1, 0], [w-1, h-1], [0, h//2]], np.int32),
-        'right': np.array([[0, 0], [0, h-1], [w-1, h//2]], np.int32),
-        'up':    np.array([[0, h-1], [w-1, h-1], [w//2, 0]], np.int32),
-        'down':  np.array([[0, 0], [w-1, 0], [w//2, h-1]], np.int32),
+        "left": np.array([[w - 1, 0], [w - 1, h - 1], [0, h // 2]], np.int32),
+        "right": np.array([[0, 0], [0, h - 1], [w - 1, h // 2]], np.int32),
+        "up": np.array([[0, h - 1], [w - 1, h - 1], [w // 2, 0]], np.int32),
+        "down": np.array([[0, 0], [w - 1, 0], [w // 2, h - 1]], np.int32),
     }[direction]
     cv2.fillPoly(canvas, [pts], 1.0)
     canvas = cv2.GaussianBlur(canvas, (3, 3), 0)
@@ -315,19 +321,27 @@ def make_decoy_wedge() -> np.ndarray:
 
 
 def make_decoy(decoy_type: str) -> np.ndarray:
-    if decoy_type == "wrong_size_disc":  return make_decoy_wrong_size()
-    if decoy_type == "wrong_alpha_disc": return make_decoy_wrong_alpha()
-    if decoy_type == "ring":             return make_decoy_ring()
-    if decoy_type == "ellipse":          return make_decoy_ellipse()
-    if decoy_type == "doubled_dot":      return make_decoy_doubled_dot()
-    if decoy_type == "ibeam":            return make_decoy_ibeam()
-    if decoy_type == "wedge":            return make_decoy_wedge()
+    if decoy_type == "wrong_size_disc":
+        return make_decoy_wrong_size()
+    if decoy_type == "wrong_alpha_disc":
+        return make_decoy_wrong_alpha()
+    if decoy_type == "ring":
+        return make_decoy_ring()
+    if decoy_type == "ellipse":
+        return make_decoy_ellipse()
+    if decoy_type == "doubled_dot":
+        return make_decoy_doubled_dot()
+    if decoy_type == "ibeam":
+        return make_decoy_ibeam()
+    if decoy_type == "wedge":
+        return make_decoy_wedge()
     raise ValueError(f"unknown decoy type: {decoy_type}")
 
 
 # ============================================================
 # Color and compositing
 # ============================================================
+
 
 def luminance(bgr_patch: np.ndarray) -> float:
     if bgr_patch.size == 0:
@@ -336,8 +350,9 @@ def luminance(bgr_patch: np.ndarray) -> float:
     return float(0.299 * r + 0.587 * g + 0.114 * b)
 
 
-def pick_cursor_color(bg_patch: np.ndarray,
-                      alpha: float = CURSOR_ALPHA_PEAK) -> tuple[int, int, int]:
+def pick_cursor_color(
+    bg_patch: np.ndarray, alpha: float = CURSOR_ALPHA_PEAK
+) -> tuple[int, int, int]:
     """iOS contrast-adaptive cursor color, calibrated to real captures."""
     SHIFT_FRAC = 0.50
     MIN_CONTRAST = 35
@@ -356,19 +371,26 @@ def pick_cursor_color(bg_patch: np.ndarray,
     return (v, v, v)
 
 
-def composite(bg: np.ndarray, sprite_alpha: np.ndarray, cx: int, cy: int,
-              color_bgr: tuple[int, int, int]) -> tuple[np.ndarray, int]:
+def composite(
+    bg: np.ndarray, sprite_alpha: np.ndarray, cx: int, cy: int, color_bgr: tuple[int, int, int]
+) -> tuple[np.ndarray, int]:
     """Alpha-over composite at (cx, cy). Returns (bg, visible_pixel_count).
     visible_pixel_count = pixels of sprite that landed inside image bounds."""
     sh, sw = sprite_alpha.shape
-    x0 = cx - sw // 2; y0 = cy - sh // 2
-    x1 = x0 + sw; y1 = y0 + sh
-    bx0 = max(0, x0); by0 = max(0, y0)
-    bx1 = min(bg.shape[1], x1); by1 = min(bg.shape[0], y1)
+    x0 = cx - sw // 2
+    y0 = cy - sh // 2
+    x1 = x0 + sw
+    y1 = y0 + sh
+    bx0 = max(0, x0)
+    by0 = max(0, y0)
+    bx1 = min(bg.shape[1], x1)
+    by1 = min(bg.shape[0], y1)
     if bx0 >= bx1 or by0 >= by1:
         return bg, 0
-    sx0 = bx0 - x0; sy0 = by0 - y0
-    sx1 = sx0 + (bx1 - bx0); sy1 = sy0 + (by1 - by0)
+    sx0 = bx0 - x0
+    sy0 = by0 - y0
+    sx1 = sx0 + (bx1 - bx0)
+    sy1 = sy0 + (by1 - by0)
     region = bg[by0:by1, bx0:bx1].astype(np.float32)
     a = sprite_alpha[sy0:sy1, sx0:sx1, None]
     color = np.array(color_bgr, dtype=np.float32)[None, None, :]
@@ -378,8 +400,9 @@ def composite(bg: np.ndarray, sprite_alpha: np.ndarray, cx: int, cy: int,
     return bg, visible_px
 
 
-def visible_alpha_centroid(sprite_alpha: np.ndarray, cx_geom: int, cy_geom: int
-                          ) -> tuple[float, float, float]:
+def visible_alpha_centroid(
+    sprite_alpha: np.ndarray, cx_geom: int, cy_geom: int
+) -> tuple[float, float, float]:
     """Compute the alpha-mass centroid of the *visible* portion of a sprite
     placed at geometric center (cx_geom, cy_geom) in image coords, plus the
     fraction of total alpha mass that survived the in-frame clip.
@@ -395,13 +418,17 @@ def visible_alpha_centroid(sprite_alpha: np.ndarray, cx_geom: int, cy_geom: int
     x1 = x0 + sw
     y1 = y0 + sh
     # Clamp to frame.
-    px0 = max(0, x0); py0 = max(0, y0)
-    px1 = min(W, x1); py1 = min(H, y1)
+    px0 = max(0, x0)
+    py0 = max(0, y0)
+    px1 = min(W, x1)
+    py1 = min(H, y1)
     if px0 >= px1 or py0 >= py1:
         return float(cx_geom), float(cy_geom), 0.0
     # Sprite-local indices of the visible region.
-    sx0 = px0 - x0; sy0 = py0 - y0
-    sx1 = sx0 + (px1 - px0); sy1 = sy0 + (py1 - py0)
+    sx0 = px0 - x0
+    sy0 = py0 - y0
+    sx1 = sx0 + (px1 - px0)
+    sy1 = sy0 + (py1 - py0)
     visible = sprite_alpha[sy0:sy1, sx0:sx1]
     visible_mass = float(visible.sum())
     total_mass = float(sprite_alpha.sum())
@@ -439,6 +466,7 @@ def augment(img: np.ndarray) -> np.ndarray:
 # Sample generators (each returns dict ready for labels.jsonl + the image)
 # ============================================================
 
+
 def gen_normal_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     """Full-cursor positive. Label is the alpha-centroid (click anchor),
     NOT the geometric center of the sprite tile — these differ on the real
@@ -450,21 +478,28 @@ def gen_normal_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     ph, pw = sprite_alpha.shape
     label_x = float(cx_geom - pw // 2) + hotspot_local[0]
     label_y = float(cy_geom - ph // 2) + hotspot_local[1]
-    py0 = max(0, cy_geom - ph // 2); px0 = max(0, cx_geom - pw // 2)
-    py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
+    py0 = max(0, cy_geom - ph // 2)
+    px0 = max(0, cx_geom - pw // 2)
+    py1 = min(H, py0 + ph)
+    px1 = min(W, px0 + pw)
     bg_patch = bg_orig[py0:py1, px0:px1]
     color = pick_cursor_color(bg_patch)
     bg = bg_orig.copy()
     bg, _vis = composite(bg, sprite_alpha, cx_geom, cy_geom, color)
     return augment(bg), {
-        "x": label_x, "y": label_y, "has_cursor": 1, "sample_type": "normal_pos",
+        "x": label_x,
+        "y": label_y,
+        "has_cursor": 1,
+        "sample_type": "normal_pos",
         "lum_under": round(luminance(bg_patch), 1),
-        "cursor_v": color[0], "diameter": diameter,
+        "cursor_v": color[0],
+        "diameter": diameter,
         # Persist hotspot so train-time crop can use asymmetric sprite-bbox
         # protection (sprite extends [label-hx, label+(d-hx)] × [label-hy,
         # label+(d-hy)], NOT a symmetric radius around the label — the iOS
         # pointer's alpha mass is biased toward the upper-left of its tile).
-        "hotspot_x": float(hotspot_local[0]), "hotspot_y": float(hotspot_local[1]),
+        "hotspot_x": float(hotspot_local[0]),
+        "hotspot_y": float(hotspot_local[1]),
     }
 
 
@@ -473,23 +508,26 @@ def gen_edge_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict] | 
     (NOT bounding-box fraction) is below MIN_VISIBLE_FRAC. Label is the
     alpha-centroid of the visible portion — the click anchor projected
     onto whatever pixels survived the clip."""
-    edge = random.choice(['left', 'right', 'top', 'bottom'])
+    edge = random.choice(["left", "right", "top", "bottom"])
     diameter = random.randint(CURSOR_PX_MIN, CURSOR_PX_MAX)
     r = diameter // 2
     edge_offset = random.randint(-r - 3, max(0, margin // 2))
-    if edge == 'left':
-        cx_geom = edge_offset; cy_geom = random.randint(margin, H - margin)
-    elif edge == 'right':
-        cx_geom = W - 1 - edge_offset; cy_geom = random.randint(margin, H - margin)
-    elif edge == 'top':
-        cx_geom = random.randint(margin, W - margin); cy_geom = edge_offset
+    if edge == "left":
+        cx_geom = edge_offset
+        cy_geom = random.randint(margin, H - margin)
+    elif edge == "right":
+        cx_geom = W - 1 - edge_offset
+        cy_geom = random.randint(margin, H - margin)
+    elif edge == "top":
+        cx_geom = random.randint(margin, W - margin)
+        cy_geom = edge_offset
     else:
-        cx_geom = random.randint(margin, W - margin); cy_geom = H - 1 - edge_offset
+        cx_geom = random.randint(margin, W - margin)
+        cy_geom = H - 1 - edge_offset
 
     sprite_alpha, _hotspot = make_pointer_sprite(diameter)
     ph, pw = sprite_alpha.shape
-    label_x, label_y, visible_frac = visible_alpha_centroid(
-        sprite_alpha, cx_geom, cy_geom)
+    label_x, label_y, visible_frac = visible_alpha_centroid(sprite_alpha, cx_geom, cy_geom)
     if visible_frac < MIN_VISIBLE_FRAC:
         return None
     # Reject samples that landed fully on-frame: with `edge_offset` ranging
@@ -502,12 +540,13 @@ def gen_edge_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict] | 
     sprite_top = cy_geom - ph // 2
     sprite_right = sprite_left + pw
     sprite_bottom = sprite_top + ph
-    is_actually_clipped = (sprite_left < 0 or sprite_top < 0
-                          or sprite_right > W or sprite_bottom > H)
+    is_actually_clipped = sprite_left < 0 or sprite_top < 0 or sprite_right > W or sprite_bottom > H
     if not is_actually_clipped:
         return None
-    py0 = max(0, cy_geom - ph // 2); px0 = max(0, cx_geom - pw // 2)
-    py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
+    py0 = max(0, cy_geom - ph // 2)
+    px0 = max(0, cx_geom - pw // 2)
+    py1 = min(H, py0 + ph)
+    px1 = min(W, px0 + pw)
     if py0 >= py1 or px0 >= px1:
         return None
     bg_patch = bg_orig[py0:py1, px0:px1]
@@ -515,9 +554,14 @@ def gen_edge_pos(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict] | 
     bg = bg_orig.copy()
     bg, _vis = composite(bg, sprite_alpha, cx_geom, cy_geom, color)
     return augment(bg), {
-        "x": label_x, "y": label_y, "has_cursor": 1, "sample_type": "edge_pos",
+        "x": label_x,
+        "y": label_y,
+        "has_cursor": 1,
+        "sample_type": "edge_pos",
         "lum_under": round(luminance(bg_patch), 1),
-        "cursor_v": color[0], "diameter": diameter, "edge": edge,
+        "cursor_v": color[0],
+        "diameter": diameter,
+        "edge": edge,
         "geometric_center": [cx_geom, cy_geom],
         "visible_frac": round(visible_frac, 3),
     }
@@ -540,8 +584,10 @@ def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     # Match gen_normal_pos's `py0:py0+ph` patch convention; `cy ± ph // 2`
     # truncates one row/col on odd-height decoys (ibeam, ring), biasing
     # pick_cursor_color by a sub-pixel luminance drift.
-    py0 = max(0, cy - ph // 2); px0 = max(0, cx - pw // 2)
-    py1 = min(H, py0 + ph); px1 = min(W, px0 + pw)
+    py0 = max(0, cy - ph // 2)
+    px0 = max(0, cx - pw // 2)
+    py1 = min(H, py0 + ph)
+    px1 = min(W, px0 + pw)
     bg_patch = bg_orig[py0:py1, px0:px1]
     color = pick_cursor_color(bg_patch)
     bg = bg_orig.copy()
@@ -553,16 +599,24 @@ def gen_hard_neg(bg_orig: np.ndarray, margin: int) -> tuple[np.ndarray, dict]:
     # offset the protected box from the actual canvas extent for
     # asymmetric decoys (`doubled_dot`, directional `wedge`).
     return augment(bg), {
-        "x": -1, "y": -1, "has_cursor": 0, "sample_type": "hard_neg",
-        "decoy_type": decoy_type, "decoy_pos": [cx, cy],
-        "decoy_w": pw, "decoy_h": ph,
+        "x": -1,
+        "y": -1,
+        "has_cursor": 0,
+        "sample_type": "hard_neg",
+        "decoy_type": decoy_type,
+        "decoy_pos": [cx, cy],
+        "decoy_w": pw,
+        "decoy_h": ph,
     }
 
 
 def gen_plain_neg(bg_orig: np.ndarray) -> tuple[np.ndarray, dict]:
     """Unmodified background, no cursor, has_cursor=0."""
     return augment(bg_orig.copy()), {
-        "x": -1, "y": -1, "has_cursor": 0, "sample_type": "plain_neg",
+        "x": -1,
+        "y": -1,
+        "has_cursor": 0,
+        "sample_type": "plain_neg",
     }
 
 
@@ -570,24 +624,33 @@ def gen_plain_neg(bg_orig: np.ndarray) -> tuple[np.ndarray, dict]:
 # Main
 # ============================================================
 
+
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--per-bg", type=int, default=1100,
-                   help="total samples per background (split per the fractions below)")
+    p.add_argument(
+        "--per-bg",
+        type=int,
+        default=1100,
+        help="total samples per background (split per the fractions below)",
+    )
     p.add_argument("--normal-pos-frac", type=float, default=0.55)
-    p.add_argument("--edge-pos-frac",   type=float, default=0.15)
-    p.add_argument("--hard-neg-frac",   type=float, default=0.15)
-    p.add_argument("--plain-neg-frac",  type=float, default=0.15)
+    p.add_argument("--edge-pos-frac", type=float, default=0.15)
+    p.add_argument("--hard-neg-frac", type=float, default=0.15)
+    p.add_argument("--plain-neg-frac", type=float, default=0.15)
     p.add_argument("--out-dir", default=OUT_DIR)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--margin", type=int, default=50,
-                   help="min distance from edge for non-edge samples")
-    p.add_argument("--limit-bgs", type=int, default=0,
-                   help="if >0, only process the first N backgrounds (for quick smoke tests)")
+    p.add_argument(
+        "--margin", type=int, default=50, help="min distance from edge for non-edge samples"
+    )
+    p.add_argument(
+        "--limit-bgs",
+        type=int,
+        default=0,
+        help="if >0, only process the first N backgrounds (for quick smoke tests)",
+    )
     args = p.parse_args()
 
-    fracs = (args.normal_pos_frac, args.edge_pos_frac,
-             args.hard_neg_frac, args.plain_neg_frac)
+    fracs = (args.normal_pos_frac, args.edge_pos_frac, args.hard_neg_frac, args.plain_neg_frac)
     if abs(sum(fracs) - 1.0) > 1e-3:
         print(f"FAIL: fractions sum to {sum(fracs):.3f}, must equal 1.0", file=sys.stderr)
         return 1
@@ -595,24 +658,23 @@ def main() -> int:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    bgs = sorted(glob.glob(os.path.join(BG_DIR, "*.png")) +
-                 glob.glob(os.path.join(BG_DIR, "*.jpg")))
+    bgs = sorted(
+        glob.glob(os.path.join(BG_DIR, "*.png")) + glob.glob(os.path.join(BG_DIR, "*.jpg"))
+    )
     if not bgs:
         print(f"FAIL: no backgrounds in {BG_DIR}", file=sys.stderr)
         return 1
     if args.limit_bgs > 0:
-        bgs = bgs[:args.limit_bgs]
+        bgs = bgs[: args.limit_bgs]
 
     n_normal = int(args.per_bg * args.normal_pos_frac)
-    n_edge   = int(args.per_bg * args.edge_pos_frac)
-    n_hard   = int(args.per_bg * args.hard_neg_frac)
-    n_plain  = args.per_bg - n_normal - n_edge - n_hard  # remainder absorbs rounding
+    n_edge = int(args.per_bg * args.edge_pos_frac)
+    n_hard = int(args.per_bg * args.hard_neg_frac)
+    n_plain = args.per_bg - n_normal - n_edge - n_hard  # remainder absorbs rounding
 
     print(f"backgrounds: {len(bgs)}  per_bg={args.per_bg}")
-    print(f"  normal_pos: {n_normal}  edge_pos: {n_edge}  "
-          f"hard_neg: {n_hard}  plain_neg: {n_plain}")
-    print(f"  expected total ≈ {len(bgs) * args.per_bg} samples (edge rejects "
-          f"reduce slightly)")
+    print(f"  normal_pos: {n_normal}  edge_pos: {n_edge}  hard_neg: {n_hard}  plain_neg: {n_plain}")
+    print(f"  expected total ≈ {len(bgs) * args.per_bg} samples (edge rejects reduce slightly)")
 
     img_dir = os.path.join(args.out_dir, "imgs")
     os.makedirs(img_dir, exist_ok=True)
@@ -656,12 +718,14 @@ def main() -> int:
                 idx += 1
 
             if (bg_idx + 1) % 10 == 0:
-                print(f"  {bg_idx + 1}/{len(bgs)} bgs processed, {idx} samples "
-                      f"(rejected {rejected_edge} edge-too-small)")
+                print(
+                    f"  {bg_idx + 1}/{len(bgs)} bgs processed, {idx} samples "
+                    f"(rejected {rejected_edge} edge-too-small)"
+                )
 
     print(f"\nwrote {idx} samples → {img_dir}")
     print(f"  by type: {counts}")
-    print(f"  rejected edge samples (visible<{int(MIN_VISIBLE_FRAC*100)}%): {rejected_edge}")
+    print(f"  rejected edge samples (visible<{int(MIN_VISIBLE_FRAC * 100)}%): {rejected_edge}")
     print(f"labels → {label_path}")
     return 0
 

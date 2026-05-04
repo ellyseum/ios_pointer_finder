@@ -38,14 +38,10 @@ import torch
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
-from train import PointerNet, NATIVE_W, NATIVE_H, TRAIN_W, TRAIN_H
+from train import NATIVE_H, NATIVE_W, TRAIN_H, TRAIN_W, PointerNet
 
-DEFAULT_REAL_DIR = os.environ.get(
-    "IPF_REAL_DIR", os.path.join(ROOT, "real_pointer_test")
-)
-DEFAULT_BG_POOL = os.environ.get(
-    "IPF_BG_POOL", os.path.join(ROOT, "backgrounds_kept")
-)
+DEFAULT_REAL_DIR = os.environ.get("IPF_REAL_DIR", os.path.join(ROOT, "real_pointer_test"))
+DEFAULT_BG_POOL = os.environ.get("IPF_BG_POOL", os.path.join(ROOT, "backgrounds_kept"))
 
 
 def load_model(path: str, device: torch.device) -> tuple[PointerNet, dict]:
@@ -87,6 +83,7 @@ def find(model: PointerNet, img: np.ndarray, device: torch.device) -> dict:
     eval matches deployed inference exactly. Falls back to local decode
     only if PointerFinder isn't constructible (no weights file)."""
     from decode import argmax_parabolic_native
+
     x = preprocess(img, device)
     with torch.no_grad():
         conf_logit, hm = model(x)  # v0.5.1: forward returns 2-tuple
@@ -94,12 +91,22 @@ def find(model: PointerNet, img: np.ndarray, device: torch.device) -> dict:
     logits = hm[0, 0].cpu().numpy()
     prob = 1.0 / (1.0 + np.exp(-logits))
     cx, cy, _ = argmax_parabolic_native(logits, NATIVE_W, NATIVE_H)
-    return {"cx": cx, "cy": cy, "conf": conf,
-            "peak": float(prob.max()), "mean_hm": float(prob.mean())}
+    return {
+        "cx": cx,
+        "cy": cy,
+        "conf": conf,
+        "peak": float(prob.max()),
+        "mean_hm": float(prob.mean()),
+    }
 
 
-def evaluate_on_dir(model: PointerNet, paths: list[str], device: torch.device,
-                    label: str, gt: dict[str, tuple[int, int]] | None = None) -> dict:
+def evaluate_on_dir(
+    model: PointerNet,
+    paths: list[str],
+    device: torch.device,
+    label: str,
+    gt: dict[str, tuple[int, int]] | None = None,
+) -> dict:
     """Returns dict with per-frame results + summary stats."""
     results = []
     for fp in paths:
@@ -125,7 +132,9 @@ def evaluate_on_dir(model: PointerNet, paths: list[str], device: torch.device,
         "mean_err_px": float(np.mean(errs)) if errs else None,
         "max_peak": float(np.max(peaks)) if peaks else None,
         "frac_conf_gt05": float(np.mean([c > 0.5 for c in confs])) if confs else None,
-        "frac_peak_gt_thresh": float(np.mean([p > 0.4 for p in peaks])) if peaks else None,  # tracks click_at.PEAK_THRESHOLD (v0.7.1: 0.4)
+        "frac_peak_gt_thresh": float(np.mean([p > 0.4 for p in peaks]))
+        if peaks
+        else None,  # tracks click_at.PEAK_THRESHOLD (v0.7.1: 0.4)
     }
     return {"summary": summary, "results": results}
 
@@ -134,14 +143,24 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--v02", default=os.path.join(ROOT, "pointer_model_v0.2.0.pt"))
     p.add_argument("--v03", default=os.path.join(ROOT, "pointer_model.pt"))
-    p.add_argument("--real-dir", default=DEFAULT_REAL_DIR,
-                   help=f"directory of real-cursor frames (default: {DEFAULT_REAL_DIR})")
-    p.add_argument("--bg-pool", default=DEFAULT_BG_POOL,
-                   help="cursor-free real captures (used to test FPR on real distractors)")
-    p.add_argument("--n-cursor-free", type=int, default=20,
-                   help="how many cursor-free real frames to sample")
-    p.add_argument("--out", default=os.path.join(ROOT, "eval_out"),
-                   help="output directory for the contact-sheet image")
+    p.add_argument(
+        "--real-dir",
+        default=DEFAULT_REAL_DIR,
+        help=f"directory of real-cursor frames (default: {DEFAULT_REAL_DIR})",
+    )
+    p.add_argument(
+        "--bg-pool",
+        default=DEFAULT_BG_POOL,
+        help="cursor-free real captures (used to test FPR on real distractors)",
+    )
+    p.add_argument(
+        "--n-cursor-free", type=int, default=20, help="how many cursor-free real frames to sample"
+    )
+    p.add_argument(
+        "--out",
+        default=os.path.join(ROOT, "eval_out"),
+        help="output directory for the contact-sheet image",
+    )
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
 
@@ -153,7 +172,7 @@ def main() -> int:
     gt = {"bg-00000.png": (656, 1424)}
 
     real_paths = sorted(glob.glob(os.path.join(args.real_dir, "*.png")))
-    bg_pool_paths = sorted(glob.glob(os.path.join(args.bg_pool, "*.png")))[:args.n_cursor_free]
+    bg_pool_paths = sorted(glob.glob(os.path.join(args.bg_pool, "*.png")))[: args.n_cursor_free]
 
     print(f"real cursor frames:  {len(real_paths)}")
     print(f"cursor-free frames:  {len(bg_pool_paths)}\n")
@@ -168,31 +187,44 @@ def main() -> int:
         # dict; format `None:.1f` would raise. Default to NaN for the print.
         _vpe = ckpt.get("val_pos_err_px")
         _vpe_str = "n/a" if _vpe is None else f"{_vpe:.1f}px"
-        print(f"=== {label}: epoch={ckpt.get('epoch', '?')} "
-              f"val_pos_err={_vpe_str} ===")
+        print(f"=== {label}: epoch={ckpt.get('epoch', '?')} val_pos_err={_vpe_str} ===")
         real_res = evaluate_on_dir(model, real_paths, device, f"{label}_real", gt)
         free_res = evaluate_on_dir(model, bg_pool_paths, device, f"{label}_free")
         for tag, res in [("real_cursor", real_res), ("cursor_free", free_res)]:
             s = res["summary"]
-            print(f"  {tag:13s}  n={s['n']:3d}  "
-                  f"conf_mean={s['mean_conf']:.3f}  peak_mean={s['mean_peak']:.3f}  "
-                  f"%conf>0.5={s['frac_conf_gt05']*100:5.1f}%  "
-                  f"%peak>0.4={s['frac_peak_gt_thresh']*100:5.1f}%"
-                  + (f"  err_mean={s['mean_err_px']:.1f}px" if s['mean_err_px'] is not None else ""))
-        rows.append({"model": label, "real": real_res["summary"], "free": free_res["summary"],
-                     "details": {"real": real_res["results"], "free": free_res["results"]}})
+            print(
+                f"  {tag:13s}  n={s['n']:3d}  "
+                f"conf_mean={s['mean_conf']:.3f}  peak_mean={s['mean_peak']:.3f}  "
+                f"%conf>0.5={s['frac_conf_gt05'] * 100:5.1f}%  "
+                f"%peak>0.4={s['frac_peak_gt_thresh'] * 100:5.1f}%"
+                + (f"  err_mean={s['mean_err_px']:.1f}px" if s["mean_err_px"] is not None else "")
+            )
+        rows.append(
+            {
+                "model": label,
+                "real": real_res["summary"],
+                "free": free_res["summary"],
+                "details": {"real": real_res["results"], "free": free_res["results"]},
+            }
+        )
 
     print()
     if len(rows) == 2:
         v02, v03 = rows[0], rows[1]
         print("=== delta (v0.3 vs v0.2) ===")
-        print(f"  real_cursor   conf  Δ={v03['real']['mean_conf']-v02['real']['mean_conf']:+.3f}  "
-              f"peak Δ={v03['real']['mean_peak']-v02['real']['mean_peak']:+.3f}")
-        if v02['real']['mean_err_px'] is not None and v03['real']['mean_err_px'] is not None:
-            print(f"  real_cursor   err   Δ={v03['real']['mean_err_px']-v02['real']['mean_err_px']:+.1f}px")
-        print(f"  cursor_free   conf  Δ={v03['free']['mean_conf']-v02['free']['mean_conf']:+.3f}  "
-              f"peak Δ={v03['free']['mean_peak']-v02['free']['mean_peak']:+.3f}  "
-              f"(↓ = improvement; v0.3 should reject distractors)")
+        print(
+            f"  real_cursor   conf  Δ={v03['real']['mean_conf'] - v02['real']['mean_conf']:+.3f}  "
+            f"peak Δ={v03['real']['mean_peak'] - v02['real']['mean_peak']:+.3f}"
+        )
+        if v02["real"]["mean_err_px"] is not None and v03["real"]["mean_err_px"] is not None:
+            print(
+                f"  real_cursor   err   Δ={v03['real']['mean_err_px'] - v02['real']['mean_err_px']:+.1f}px"
+            )
+        print(
+            f"  cursor_free   conf  Δ={v03['free']['mean_conf'] - v02['free']['mean_conf']:+.3f}  "
+            f"peak Δ={v03['free']['mean_peak'] - v02['free']['mean_peak']:+.3f}  "
+            f"(↓ = improvement; v0.3 should reject distractors)"
+        )
 
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "eval_v03_results.json"), "w") as f:

@@ -22,11 +22,14 @@ Inputs:
   --threshold N      brightness 0-255 below which pixel is fully transparent
   --falloff N        soft alpha falloff range above threshold
 """
+
 from __future__ import annotations
+
 import argparse
 from pathlib import Path
-from PIL import Image
+
 import numpy as np
+from PIL import Image
 
 
 def main() -> None:

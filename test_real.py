@@ -24,12 +24,10 @@ import sys
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 # Local import — same dir as train.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from train import PointerNet, NATIVE_W, NATIVE_H, TRAIN_W, TRAIN_H
+from train import NATIVE_H, NATIVE_W, TRAIN_H, TRAIN_W, PointerNet
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TEST_DIR = os.path.join(ROOT, "real_pointer_test")
@@ -42,7 +40,7 @@ GT = {
 
 
 def preprocess(img_bgr: np.ndarray) -> torch.Tensor:
-    """ resize → CHW float32 [0,1] → normalize to (-2, 2) range used in training """
+    """resize → CHW float32 [0,1] → normalize to (-2, 2) range used in training"""
     small = cv2.resize(img_bgr, (TRAIN_W, TRAIN_H), interpolation=cv2.INTER_AREA)
     x = torch.from_numpy(small.astype(np.float32) / 255.0).permute(2, 0, 1)
     x = (x - 0.5) / 0.25
@@ -56,6 +54,7 @@ def hard_argmax_xy(hm_logits: torch.Tensor) -> tuple[float, float, float]:
     NATIVE_W/H. v0.5.1: matches inference.py decode exactly.
     """
     from decode import parabolic_offset as _parabolic_offset
+
     logits = hm_logits[0, 0].cpu().numpy()
     H, W = logits.shape
     flat = int(logits.argmax())
@@ -73,28 +72,47 @@ def hard_argmax_xy(hm_logits: torch.Tensor) -> tuple[float, float, float]:
 
 def heatmap_overlay(img_native: np.ndarray, hm_prob: np.ndarray) -> np.ndarray:
     """Blend a colormap of hm (resized to native) over the image. hm_prob in [0,1]."""
-    hm_full = cv2.resize(hm_prob, (img_native.shape[1], img_native.shape[0]),
-                         interpolation=cv2.INTER_LINEAR)
+    hm_full = cv2.resize(
+        hm_prob, (img_native.shape[1], img_native.shape[0]), interpolation=cv2.INTER_LINEAR
+    )
     hm8 = (np.clip(hm_full, 0, 1) * 255).astype(np.uint8)
     cm = cv2.applyColorMap(hm8, cv2.COLORMAP_JET)
     return cv2.addWeighted(img_native, 0.6, cm, 0.4, 0)
 
 
-def annotate(img: np.ndarray,
-             pred_hard_xy: tuple[int, int], gt_xy: tuple[int, int] | None,
-             conf: float, peak_logit: float) -> np.ndarray:
+def annotate(
+    img: np.ndarray,
+    pred_hard_xy: tuple[int, int],
+    gt_xy: tuple[int, int] | None,
+    conf: float,
+    peak_logit: float,
+) -> np.ndarray:
     """Draw markers and labels on a copy of img.
     v0.5.1: soft-argmax marker dropped (forward no longer computes pred_xy)."""
     out = img.copy()
     # Pred (hard argmax) — green circle, prominent
     cv2.circle(out, pred_hard_xy, 30, (0, 255, 0), 3)
-    cv2.putText(out, f"argmax", (pred_hard_xy[0] + 35, pred_hard_xy[1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    cv2.putText(
+        out,
+        "argmax",
+        (pred_hard_xy[0] + 35, pred_hard_xy[1] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (0, 255, 0),
+        2,
+    )
     # GT — blue circle if known
     if gt_xy is not None:
         cv2.circle(out, gt_xy, 25, (255, 100, 0), 3)
-        cv2.putText(out, f"GT", (gt_xy[0] - 80, gt_xy[1] - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 100, 0), 2)
+        cv2.putText(
+            out,
+            "GT",
+            (gt_xy[0] - 80, gt_xy[1] - 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 100, 0),
+            2,
+        )
     # Header bar
     info = f"conf={conf:.3f}  hm_peak_logit={peak_logit:.2f}  hard={pred_hard_xy}"
     if gt_xy is not None:
@@ -121,6 +139,7 @@ def main() -> int:
     model = PointerNet().to(device).eval()
     if suffix == ".safetensors":
         from safetensors.torch import load_file
+
         model.load_state_dict(load_file(args.weights))
         sidecar = os.path.splitext(args.weights)[0] + ".config.json"
         ckpt = {}
@@ -132,8 +151,10 @@ def main() -> int:
         model.load_state_dict(ckpt["model"])
     _vpe = ckpt.get("val_pos_err_px")
     _vpe_str = "n/a" if _vpe is None else f"{_vpe:.1f}px"
-    print(f"checkpoint epoch={ckpt.get('epoch', '?')}  val_pos_err={_vpe_str}  "
-          f"train_size={ckpt.get('train_size')}  native_size={ckpt.get('native_size')}")
+    print(
+        f"checkpoint epoch={ckpt.get('epoch', '?')}  val_pos_err={_vpe_str}  "
+        f"train_size={ckpt.get('train_size')}  native_size={ckpt.get('native_size')}"
+    )
 
     frames = sorted(glob.glob(os.path.join(args.test_dir, "*.png")))
     print(f"frames: {len(frames)}\n")
@@ -159,7 +180,9 @@ def main() -> int:
         if gt is not None:
             err = np.hypot(hard_xy[0] - gt[0], hard_xy[1] - gt[1])
             err_str = f"{err:.0f}"
-        print(f"{name:<18}  {conf:>6.3f}  {peak_logit:>6.2f}  {str(hard_xy):>14}  {str(gt):>14}  {err_str:>5}")
+        print(
+            f"{name:<18}  {conf:>6.3f}  {peak_logit:>6.2f}  {str(hard_xy):>14}  {str(gt):>14}  {err_str:>5}"
+        )
 
         # Visualizations
         hm_prob = torch.sigmoid(pred_hm)[0, 0].cpu().numpy()  # (H', W') in [0,1]
@@ -168,11 +191,11 @@ def main() -> int:
         # Side-by-side: annotated original | heatmap overlay
         sxs = np.hstack([annotated, overlay])
         # Half-resolution for easier viewing on Windows
-        sxs_half = cv2.resize(sxs, (sxs.shape[1] // 2, sxs.shape[0] // 2),
-                              interpolation=cv2.INTER_AREA)
+        sxs_half = cv2.resize(
+            sxs, (sxs.shape[1] // 2, sxs.shape[0] // 2), interpolation=cv2.INTER_AREA
+        )
         out_name = name.replace(".png", "_test.jpg")
-        cv2.imwrite(os.path.join(args.out_dir, out_name), sxs_half,
-                    [cv2.IMWRITE_JPEG_QUALITY, 90])
+        cv2.imwrite(os.path.join(args.out_dir, out_name), sxs_half, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
     print(f"\nwrote visualizations → {args.out_dir}")
     return 0

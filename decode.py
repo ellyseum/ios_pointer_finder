@@ -20,6 +20,7 @@ Stride convention: cell ``i`` maps to native pixel ``i*s + (s-1)/2``,
 where ``s = native_dim / hm_dim`` per axis. This is the receptive-field
 center, not the corner.
 """
+
 from __future__ import annotations
 
 import numpy as np

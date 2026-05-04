@@ -26,6 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import cv2
+
 import synthesize  # noqa: E402
 import train  # noqa: E402
 from inference import _parabolic_offset  # noqa: E402
@@ -136,7 +137,8 @@ if real is not None:
 # =====================================================================
 section("Bug 5+9: gen_normal_pos uses alpha-centroid label, not geom center")
 
-random.seed(0); np.random.seed(0)
+random.seed(0)
+np.random.seed(0)
 img, lbl = synthesize.gen_normal_pos(bg, margin=50)
 check(
     "normal_pos label is float (not the integer geometric center)",
@@ -150,11 +152,12 @@ check(
 # would put the label BELOW the tile center, which is what we test for.
 src_alpha, (sx, sy) = synthesize._load_real_sprite()
 sw, sh = src_alpha.shape[::-1]
-upward_bias = (sh - 1) / 2.0 - sy   # how many pixels above geom center
+upward_bias = (sh - 1) / 2.0 - sy  # how many pixels above geom center
 upward_count = 0
 total = 200
 for trial in range(total):
-    random.seed(trial); np.random.seed(trial)
+    random.seed(trial)
+    np.random.seed(trial)
     _, lab = synthesize.gen_normal_pos(bg, margin=50)
     # Recover the placement geometric center: label_y = geom_top_left + hotspot_y
     # = (cy_geom - sh//2) + hotspot_y_in_resized; hotspot < (resized_h-1)/2
@@ -204,18 +207,24 @@ check(
 # =====================================================================
 section("Bug 4: train-time crop respects cursor footprint")
 
+
 # Simulate _apply_train_augment with a positive sample where the cursor
 # center is near the frame edge so naive crop would clip it.
 class FakeDS(train.PointerDataset):
     def __init__(self):
         self.augment = True
 
+
 # Synthesize a sample-like dict
 fake_label = {
-    "x": 60.0, "y": 60.0,  # cursor center near top-left
-    "has_cursor": 1, "sample_type": "normal_pos", "diameter": 46,
+    "x": 60.0,
+    "y": 60.0,  # cursor center near top-left
+    "has_cursor": 1,
+    "sample_type": "normal_pos",
+    "diameter": 46,
 }
-random.seed(1); np.random.seed(1)
+random.seed(1)
+np.random.seed(1)
 fake_img = np.zeros((train.NATIVE_H, train.NATIVE_W, 3), dtype=np.uint8)
 
 ds = FakeDS()
@@ -228,13 +237,17 @@ chosen_crops: list[tuple[int, int, int, int]] = []
 
 orig_randint = random.randint
 randint_calls = []
+
+
 def spy_randint(a, b):
     v = orig_randint(a, b)
     randint_calls.append(v)
     return v
 
+
 for trial in range(n_trials):
-    random.seed(trial); np.random.seed(trial)
+    random.seed(trial)
+    np.random.seed(trial)
     randint_calls.clear()
     random.randint = spy_randint
     try:
@@ -257,7 +270,8 @@ check(
 edge_label = dict(fake_label, x=train.NATIVE_W - 30.0, y=400.0)
 violation_count = 0
 for trial in range(50):
-    random.seed(trial * 7 + 1); np.random.seed(trial)
+    random.seed(trial * 7 + 1)
+    np.random.seed(trial)
     img_out, new_lbl = ds._apply_train_augment(fake_img, edge_label)
     if not new_lbl.get("has_cursor"):
         violation_count += 1  # cursor-anchor crop would be a violation
@@ -269,7 +283,8 @@ check(
 
 # Edge_pos should not be cropped at all
 fake_edge_label = dict(fake_label, sample_type="edge_pos", x=10.0, y=600.0)
-random.seed(2); np.random.seed(2)
+random.seed(2)
+np.random.seed(2)
 img_out, _ = ds._apply_train_augment(fake_img, fake_edge_label)
 check(
     "edge_pos sample is not cropped (full-frame returned)",
@@ -324,7 +339,7 @@ target_cell_x = float(train.native_to_cell(torch.tensor([target_x]), hm_w, train
 target_cell_y = float(train.native_to_cell(torch.tensor([target_y]), hm_h, train.NATIVE_H)[0])
 yy_, xx_ = np.indices((hm_h, hm_w), dtype=np.float32)
 d2 = (xx_ - target_cell_x) ** 2 + (yy_ - target_cell_y) ** 2
-fake_logits = (8.0 * np.exp(-d2 / (2 * 1.25 ** 2)) - 4.0).astype(np.float32)
+fake_logits = (8.0 * np.exp(-d2 / (2 * 1.25**2)) - 4.0).astype(np.float32)
 fake_hm = torch.from_numpy(fake_logits)[None, None]
 decoded = train.heatmap_to_xy_px(fake_hm, train.NATIVE_W, train.NATIVE_H)
 dx_back = float(decoded[0, 0])
@@ -350,7 +365,7 @@ target_x = 5.25
 target_y = 5.0
 for iy in range(11):
     for ix in range(11):
-        d2 = (ix - target_x)**2 + (iy - target_y)**2
+        d2 = (ix - target_x) ** 2 + (iy - target_y) ** 2
         # Strong logit peak (saturates sigmoid at peak)
         hm_logits_np[iy, ix] = 8.0 * np.exp(-d2 / (2 * 1.25**2)) - 4.0
 
@@ -369,7 +384,7 @@ check(
 check(
     "parabolic on logits is closer to truth than parabolic on sigmoid",
     abs(off_logit - 0.25) < abs(off_sig - 0.25),
-    f"|logit-truth|={abs(off_logit-0.25):.4f} vs |sigmoid-truth|={abs(off_sig-0.25):.4f}",
+    f"|logit-truth|={abs(off_logit - 0.25):.4f} vs |sigmoid-truth|={abs(off_sig - 0.25):.4f}",
 )
 
 

@@ -56,16 +56,30 @@ def hamming(a: np.ndarray, b: np.ndarray) -> int:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--out-dir", default=OUT_DIR)
-    p.add_argument("--lum-delta", type=int, default=25,
-                   help="per-pixel luminance delta to count as 'changed'")
-    p.add_argument("--diff-threshold", type=float, default=0.04,
-                   help="fraction of pixels that must be 'changed' to keep frame")
-    p.add_argument("--min-interval-s", type=float, default=1.0,
-                   help="minimum seconds between saved frames")
-    p.add_argument("--phash-recent", type=int, default=120,
-                   help="check perceptual-hash against last N saved frames")
-    p.add_argument("--phash-min-bits", type=int, default=32,
-                   help="reject if pHash within this many bits of any recent (out of 256)")
+    p.add_argument(
+        "--lum-delta", type=int, default=25, help="per-pixel luminance delta to count as 'changed'"
+    )
+    p.add_argument(
+        "--diff-threshold",
+        type=float,
+        default=0.04,
+        help="fraction of pixels that must be 'changed' to keep frame",
+    )
+    p.add_argument(
+        "--min-interval-s", type=float, default=1.0, help="minimum seconds between saved frames"
+    )
+    p.add_argument(
+        "--phash-recent",
+        type=int,
+        default=120,
+        help="check perceptual-hash against last N saved frames",
+    )
+    p.add_argument(
+        "--phash-min-bits",
+        type=int,
+        default=32,
+        help="reject if pHash within this many bits of any recent (out of 256)",
+    )
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args()
 
@@ -82,7 +96,9 @@ def main() -> int:
         except Exception:
             saved = len(existing)
     print(f"capture_backgrounds: out={args.out_dir} starting at idx {saved}")
-    print(f"diff_threshold={args.diff_threshold:.2f}  lum_delta={args.lum_delta}  min_interval={args.min_interval_s}s")
+    print(
+        f"diff_threshold={args.diff_threshold:.2f}  lum_delta={args.lum_delta}  min_interval={args.min_interval_s}s"
+    )
     print("navigate the iPhone (touch, not BLE mouse). Ctrl+C to stop.\n")
 
     last_gray = None
@@ -94,7 +110,7 @@ def main() -> int:
 
     # Bootstrap recent_hashes from existing files in out-dir (resume support)
     if existing:
-        for f in existing[-args.phash_recent:]:
+        for f in existing[-args.phash_recent :]:
             img = cv2.imread(f, cv2.IMREAD_COLOR)
             if img is not None:
                 recent_hashes.append(avg_hash(img))
@@ -103,10 +119,12 @@ def main() -> int:
         while True:
             files = _safe_sorted_jpegs()
             if len(files) < 2:
-                time.sleep(0.05); continue
+                time.sleep(0.05)
+                continue
             snap = files[1]
             if snap == last_seen_path:
-                time.sleep(0.05); continue
+                time.sleep(0.05)
+                continue
             last_seen_path = snap
 
             img = cv2.imread(snap, cv2.IMREAD_COLOR)
@@ -147,11 +165,15 @@ def main() -> int:
             if len(recent_hashes) > args.phash_recent:
                 recent_hashes.pop(0)
             if not args.quiet:
-                print(f"[{saved:5d}] {os.path.basename(snap)} changed={changed_frac:.2%} -> {os.path.basename(out)}")
+                print(
+                    f"[{saved:5d}] {os.path.basename(snap)} changed={changed_frac:.2%} -> {os.path.basename(out)}"
+                )
             saved += 1
             time.sleep(0.05)
     except KeyboardInterrupt:
-        print(f"\nstopped. saved {saved} backgrounds (rejected {rejected_diff} below diff, {rejected_phash} as pHash dups)")
+        print(
+            f"\nstopped. saved {saved} backgrounds (rejected {rejected_diff} below diff, {rejected_phash} as pHash dups)"
+        )
         return 0
 
 

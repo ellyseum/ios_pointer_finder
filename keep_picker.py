@@ -31,7 +31,8 @@ class Handler(SimpleHTTPRequestHandler):
             with open(path, "rb") as f:
                 data = f.read()
         except FileNotFoundError:
-            self.send_error(404); return
+            self.send_error(404)
+            return
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -52,23 +53,31 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
-            self._send_file(INDEX_HTML, "text/html"); return
+            self._send_file(INDEX_HTML, "text/html")
+            return
         if path == "/list":
             exts = (".jpg", ".jpeg", ".png")
-            files = sorted(f for f in os.listdir(BG_DIR) if f.lower().endswith(exts)) if os.path.isdir(BG_DIR) else []
+            files = (
+                sorted(f for f in os.listdir(BG_DIR) if f.lower().endswith(exts))
+                if os.path.isdir(BG_DIR)
+                else []
+            )
             kept = set(os.listdir(KEEP_DIR)) if os.path.isdir(KEEP_DIR) else set()
             entries = [{"name": f, "kept": (f in kept)} for f in files]
             self._send_json(200, {"files": entries, "total": len(files), "already_kept": len(kept)})
             return
         if path.startswith("/img/"):
-            name = path[len("/img/"):]
+            name = path[len("/img/") :]
             if "/" in name or "\\" in name or ".." in name:
-                self.send_error(403); return
+                self.send_error(403)
+                return
             full = os.path.join(BG_DIR, name)
             if not os.path.isfile(full):
-                self.send_error(404); return
+                self.send_error(404)
+                return
             ctype = "image/png" if name.lower().endswith(".png") else "image/jpeg"
-            self._send_file(full, ctype); return
+            self._send_file(full, ctype)
+            return
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -78,12 +87,14 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
-            self._send_json(400, {"error": "bad JSON"}); return
+            self._send_json(400, {"error": "bad JSON"})
+            return
 
         if path == "/save":
             names = data.get("names", [])
             if not isinstance(names, list):
-                self._send_json(400, {"error": "names must be a list"}); return
+                self._send_json(400, {"error": "names must be a list"})
+                return
             os.makedirs(KEEP_DIR, exist_ok=True)
             copied = 0
             for n in names:

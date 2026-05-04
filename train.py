@@ -27,7 +27,6 @@ import os
 import random
 import sys
 import time
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -50,6 +49,7 @@ def _stable_bg_hash(bg_id: str) -> int:
     re-shuffle the membership of any existing bg.
     """
     import zlib
+
     return zlib.adler32(bg_id.encode("utf-8"))
 
 
@@ -69,9 +69,7 @@ def save_checkpoint(ckpt: dict, path: str) -> None:
         try:
             from safetensors.torch import save_file
         except ImportError as e:
-            raise SystemExit(
-                "Saving .safetensors needs `pip install safetensors`."
-            ) from e
+            raise SystemExit("Saving .safetensors needs `pip install safetensors`.") from e
         save_file(ckpt["model"], path)
         sidecar = os.path.splitext(path)[0] + ".config.json"
         meta = {k: v for k, v in ckpt.items() if k != "model"}
@@ -93,11 +91,12 @@ def read_version() -> str:
     except OSError:
         return "unversioned"
 
+
 NATIVE_W, NATIVE_H = 994, 2160
 TRAIN_W, TRAIN_H = 497, 1080  # 2x downsample (was 4x — cursor was sub-pixel
-                              # at 4x_input × 8x_backbone = 1/32 effective; at
-                              # 2x_input × 8x_backbone = 1/16, cursor 46/16 =
-                              # ~3 px in feature map, learnable)
+# at 4x_input × 8x_backbone = 1/32 effective; at
+# 2x_input × 8x_backbone = 1/16, cursor 46/16 =
+# ~3 px in feature map, learnable)
 
 # Stride convention. Distinguishes the structural train-resolution stride
 # (3 stride-2 conv blocks → 8x downsample, plus 2x train→native upsample =
@@ -133,9 +132,15 @@ class PointerDataset(Dataset):
     Falls back to sample-level split with a warning if labels lack bg_id
     (legacy datasets only).
     """
-    def __init__(self, dataset_dir: str, train: bool = True, val_frac: float = 0.1,
-                 val_bg_ids: set[str] | None = None,
-                 augment: bool = False):
+
+    def __init__(
+        self,
+        dataset_dir: str,
+        train: bool = True,
+        val_frac: float = 0.1,
+        val_bg_ids: set[str] | None = None,
+        augment: bool = False,
+    ):
         """augment=True turns on train-time random crop + flip + photometric jitter
         in __getitem__. With only ~100 train backgrounds, returning the same baked
         JPEG every epoch lets the network memorize specific bg textures. Online
@@ -164,8 +169,10 @@ class PointerDataset(Dataset):
             self.val_bg_ids = set(val_bg_ids)
             self.split_kind = "bg-level"
         else:
-            print("WARN: dataset missing bg_id field; falling back to sample-level "
-                  "split (val_pos_err will be optimistic on this dataset).")
+            print(
+                "WARN: dataset missing bg_id field; falling back to sample-level "
+                "split (val_pos_err will be optimistic on this dataset)."
+            )
             random.Random(42).shuffle(all_labels)
             n_val = max(1, int(len(all_labels) * val_frac))
             entries = all_labels[n_val:] if train else all_labels[:n_val]
@@ -226,17 +233,19 @@ class PointerDataset(Dataset):
             d = int(e.get("diameter", 46))
             hx = float(e.get("hotspot_x", d / 2.0))
             hy = float(e.get("hotspot_y", d / 2.0))
-            ax = float(e["x"]); ay = float(e["y"])
+            ax = float(e["x"])
+            ay = float(e["y"])
             margin = 2  # px slack
-            req_l = ax - hx - margin; req_r = ax + (d - hx) + margin
-            req_t = ay - hy - margin; req_b = ay + (d - hy) + margin
+            req_l = ax - hx - margin
+            req_r = ax + (d - hx) + margin
+            req_t = ay - hy - margin
+            req_b = ay + (d - hy) + margin
             for _ in range(8):
                 c_x0 = random.randint(0, max_crop_x)
                 c_y0 = random.randint(0, max_crop_y)
                 c_x1 = w - random.randint(0, max_crop_x)
                 c_y1 = h - random.randint(0, max_crop_y)
-                if (c_x0 <= req_l and req_r <= c_x1
-                        and c_y0 <= req_t and req_b <= c_y1):
+                if c_x0 <= req_l and req_r <= c_x1 and c_y0 <= req_t and req_b <= c_y1:
                     crop_x0, crop_y0, crop_x1, crop_y1 = c_x0, c_y0, c_x1, c_y1
                     found_safe_crop = True
                     break
@@ -248,15 +257,16 @@ class PointerDataset(Dataset):
             dx, dy = float(dpos[0]), float(dpos[1])
             dw = int(e.get("decoy_w", MAX_DECOY_EXTENT))
             dh = int(e.get("decoy_h", MAX_DECOY_EXTENT))
-            req_l = dx - dw / 2.0 - 2; req_r = dx + dw / 2.0 + 2
-            req_t = dy - dh / 2.0 - 2; req_b = dy + dh / 2.0 + 2
+            req_l = dx - dw / 2.0 - 2
+            req_r = dx + dw / 2.0 + 2
+            req_t = dy - dh / 2.0 - 2
+            req_b = dy + dh / 2.0 + 2
             for _ in range(8):
                 c_x0 = random.randint(0, max_crop_x)
                 c_y0 = random.randint(0, max_crop_y)
                 c_x1 = w - random.randint(0, max_crop_x)
                 c_y1 = h - random.randint(0, max_crop_y)
-                if (c_x0 <= req_l and req_r <= c_x1
-                        and c_y0 <= req_t and req_b <= c_y1):
+                if c_x0 <= req_l and req_r <= c_x1 and c_y0 <= req_t and req_b <= c_y1:
                     crop_x0, crop_y0, crop_x1, crop_y1 = c_x0, c_y0, c_x1, c_y1
                     found_safe_crop = True
                     break
@@ -319,8 +329,7 @@ class PointerDataset(Dataset):
         img = cv2.imread(path)
         if img is None:
             raise FileNotFoundError(
-                f"PointerDataset: failed to read {path} "
-                f"(corrupt JPEG or partial regen?)"
+                f"PointerDataset: failed to read {path} (corrupt JPEG or partial regen?)"
             )
         if self.augment:
             img, e = self._apply_train_augment(img, e)
@@ -337,8 +346,7 @@ class PointerDataset(Dataset):
         else:
             target_xy = torch.tensor([0.0, 0.0], dtype=torch.float32)
             target_conf = torch.tensor(0.0)
-        sample_type = torch.tensor(
-            SAMPLE_TYPES.get(e.get("sample_type", ""), -1), dtype=torch.long)
+        sample_type = torch.tensor(SAMPLE_TYPES.get(e.get("sample_type", ""), -1), dtype=torch.long)
         return x, target_xy, target_conf, sample_type
 
 
@@ -358,6 +366,7 @@ class PointerNet(nn.Module):
 
     Forward returns (conf_logit, heatmap_logits) — 2-tuple.
     """
+
     def __init__(self, dropout_p: float = 0.10):
         super().__init__()
         # 3 stride-2 blocks → 1/8 downsample. With 46-px cursor at 1/4 train
@@ -366,12 +375,22 @@ class PointerNet(nn.Module):
         # v0.3.1: Dropout2d after the last two conv blocks to fight bg-texture
         # memorization at this 338K-param scale.
         self.backbone = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 96, 3, stride=2, padding=1), nn.BatchNorm2d(96), nn.ReLU(inplace=True),
-            nn.Conv2d(96, 128, 3, stride=1, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Conv2d(3, 32, 3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 96, 3, stride=2, padding=1),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(96, 128, 3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
             nn.Dropout2d(p=dropout_p),
-            nn.Conv2d(128, 128, 3, stride=1, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
             nn.Dropout2d(p=dropout_p),
         )
         # Heatmap head: 1-channel score map at 1/8 train resolution
@@ -380,8 +399,10 @@ class PointerNet(nn.Module):
         self.heatmap_head = nn.Conv2d(128, 1, 1)
         # Confidence head: global avg pool + small MLP
         self.conf_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1), nn.Flatten(),
-            nn.Linear(128, 32), nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(128, 32),
+            nn.ReLU(inplace=True),
             nn.Linear(32, 1),
         )
 
@@ -393,8 +414,8 @@ class PointerNet(nn.Module):
         # heatmap target used a stride convention — different objectives.
         # Inference path: hard argmax + parabolic refinement on raw logits
         # (`heatmap_to_xy_px`, `inference._parabolic_offset`).
-        feat = self.backbone(x)          # (B, 128, H', W')
-        hm = self.heatmap_head(feat)     # (B, 1, H', W') — raw logits
+        feat = self.backbone(x)  # (B, 128, H', W')
+        hm = self.heatmap_head(feat)  # (B, 1, H', W') — raw logits
         conf_logit = self.conf_head(feat).squeeze(1)
         return conf_logit, hm
 
@@ -470,8 +491,9 @@ def heatmap_to_xy_px(hm_logits: torch.Tensor, native_w: int, native_h: int) -> t
     return torch.stack([cx_px, cy_px], dim=1)
 
 
-def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
-                        sigma_px: float = 1.25) -> torch.Tensor:
+def make_target_heatmap(
+    target_xy_norm: torch.Tensor, hm_h: int, hm_w: int, sigma_px: float = 1.25
+) -> torch.Tensor:
     """
     Build (B, 1, H', W') Gaussian target heatmap centered at each (x_norm, y_norm).
     `target_xy_norm` is (x/NATIVE_W, y/NATIVE_H) — the caller owns native-px
@@ -496,13 +518,18 @@ def make_target_heatmap(target_xy_norm: torch.Tensor, hm_h: int, hm_w: int,
     xx = torch.arange(hm_w, device=device, dtype=torch.float32).view(1, 1, hm_w)
     dy2 = (yy - cy.view(B, 1, 1)) ** 2
     dx2 = (xx - cx.view(B, 1, 1)) ** 2
-    target_hm = torch.exp(-(dx2 + dy2) / (2 * sigma_px ** 2))
+    target_hm = torch.exp(-(dx2 + dy2) / (2 * sigma_px**2))
     return target_hm.unsqueeze(1)  # (B, 1, H, W)
 
 
 def _measure_backbone_grad_ratio(
-    model, train_dl, device, hm_weight: float, conf_weight: float,
-    plain_neg_rel: float, hard_neg_rel: float,
+    model,
+    train_dl,
+    device,
+    hm_weight: float,
+    conf_weight: float,
+    plain_neg_rel: float,
+    hard_neg_rel: float,
 ) -> dict | None:
     """Measure per-head gradient L2 norm at the SHARED BACKBONE.
 
@@ -533,7 +560,7 @@ def _measure_backbone_grad_ratio(
         for p in backbone_params:
             if p.grad is not None:
                 total += float(p.grad.detach().float().norm() ** 2)
-        return total ** 0.5
+        return total**0.5
 
     # Diagnostic must not mutate model state. BatchNorm in train mode
     # updates running_mean/running_var on every forward; doing that with
@@ -570,9 +597,7 @@ def _measure_backbone_grad_ratio(
     hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
     hm_plain_neg_loss = (hm_loss_per_b * plain_mask).sum() / plain_count
     hm_hard_neg_loss = (hm_loss_per_b * hard_mask).sum() / hard_count
-    hm_loss = (hm_pos_loss
-               + plain_neg_rel * hm_plain_neg_loss
-               + hard_neg_rel * hm_hard_neg_loss)
+    hm_loss = hm_pos_loss + plain_neg_rel * hm_plain_neg_loss + hard_neg_rel * hm_hard_neg_loss
 
     conf_loss = F.binary_cross_entropy_with_logits(pred_conf_logit, target_conf)
 
@@ -629,7 +654,7 @@ def train_loop(args):
     base_seed = int(args.seed) if args.seed is not None else 42
     pass_id_str = os.environ.get("IPF_PASS_ID", "").strip()
     pass_offset = int(pass_id_str) if pass_id_str.isdigit() else 0
-    seed = (base_seed + pass_offset * 1009) % (2 ** 31)  # 1009 prime, decorrelates passes
+    seed = (base_seed + pass_offset * 1009) % (2**31)  # 1009 prime, decorrelates passes
 
     # (CUBLAS_WORKSPACE_CONFIG is set in main() before train_loop runs, so
     # cuBLAS sees it at handle init regardless of where torch.cuda gets
@@ -645,8 +670,10 @@ def train_loop(args):
         # No `warn_only=True`: if a non-deterministic op runs, we want the
         # explicit RuntimeError — that's the signal the run isn't bit-exact.
         torch.use_deterministic_algorithms(True)
-    print(f"  base_seed={base_seed}  pass_offset={pass_offset}  effective_seed={seed}  "
-          f"strict_determinism={getattr(args, 'strict_determinism', False)}")
+    print(
+        f"  base_seed={base_seed}  pass_offset={pass_offset}  effective_seed={seed}  "
+        f"strict_determinism={getattr(args, 'strict_determinism', False)}"
+    )
 
     # If resuming, peek at the checkpoint metadata FIRST so we can carry the
     # previous run's val_bg_ids forward — keeps the val_pos_err metric on
@@ -675,12 +702,24 @@ def train_loop(args):
                 meta = None
         if isinstance(meta, dict) and meta.get("val_bg_ids"):
             persisted_val_bg_ids = set(meta["val_bg_ids"])
-            print(f"  resume: inheriting val_bg_ids from checkpoint ({len(persisted_val_bg_ids)} bgs)")
+            print(
+                f"  resume: inheriting val_bg_ids from checkpoint ({len(persisted_val_bg_ids)} bgs)"
+            )
 
-    train_ds = PointerDataset(args.dataset, train=True, val_frac=args.val_frac,
-                              augment=args.augment, val_bg_ids=persisted_val_bg_ids)
-    val_ds = PointerDataset(args.dataset, train=False, val_frac=args.val_frac,
-                            val_bg_ids=train_ds.val_bg_ids, augment=False)
+    train_ds = PointerDataset(
+        args.dataset,
+        train=True,
+        val_frac=args.val_frac,
+        augment=args.augment,
+        val_bg_ids=persisted_val_bg_ids,
+    )
+    val_ds = PointerDataset(
+        args.dataset,
+        train=False,
+        val_frac=args.val_frac,
+        val_bg_ids=train_ds.val_bg_ids,
+        augment=False,
+    )
 
     # `--limit-val N` for fast regression smoke. Shuffle val entries with a
     # fixed seed BEFORE slicing — `labels.jsonl` is written background-major
@@ -691,10 +730,14 @@ def train_loop(args):
         shuffled = list(val_ds.entries)
         rng.shuffle(shuffled)
         val_ds.entries = shuffled[: args.limit_val]
-        print(f"  --limit-val {args.limit_val}: shuffled+sliced val to {len(val_ds.entries)} samples")
+        print(
+            f"  --limit-val {args.limit_val}: shuffled+sliced val to {len(val_ds.entries)} samples"
+        )
 
-    print(f"train: {len(train_ds)}  val: {len(val_ds)}  split: {train_ds.split_kind}  "
-          f"train_augment={args.augment}")
+    print(
+        f"train: {len(train_ds)}  val: {len(val_ds)}  split: {train_ds.split_kind}  "
+        f"train_augment={args.augment}"
+    )
     if train_ds.val_bg_ids:
         print(f"  val bgs ({len(train_ds.val_bg_ids)}): {sorted(train_ds.val_bg_ids)[:6]}...")
 
@@ -707,16 +750,27 @@ def train_loop(args):
     # `base + worker_id` per worker before our hook runs); using it directly
     # gives each worker a unique, deterministic seed without double-offsetting.
     def _worker_init_fn(worker_id: int) -> None:
-        seed = torch.initial_seed() % (2 ** 32)
+        seed = torch.initial_seed() % (2**32)
         random.seed(seed)
         np.random.seed(seed)
 
-    train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                           num_workers=args.workers, pin_memory=True, drop_last=False,
-                           worker_init_fn=_worker_init_fn)
-    val_dl = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
-                         num_workers=args.workers, pin_memory=True,
-                         worker_init_fn=_worker_init_fn)
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=True,
+        drop_last=False,
+        worker_init_fn=_worker_init_fn,
+    )
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        worker_init_fn=_worker_init_fn,
+    )
 
     model = PointerNet().to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -740,9 +794,7 @@ def train_loop(args):
             try:
                 from safetensors.torch import load_file
             except ImportError as e:
-                raise SystemExit(
-                    "--resume on .safetensors needs `pip install safetensors`."
-                ) from e
+                raise SystemExit("--resume on .safetensors needs `pip install safetensors`.") from e
             state_dict = load_file(args.resume)
             model.load_state_dict(state_dict)
             sidecar = os.path.splitext(args.resume)[0] + ".config.json"
@@ -756,8 +808,9 @@ def train_loop(args):
             model.load_state_dict(ckpt["model"])
             resume_best = float(ckpt.get("val_pos_err_px", float("inf")))
             prev_epoch = ckpt.get("epoch", "?")
-        print(f"resumed from {args.resume} (was epoch {prev_epoch}, "
-              f"val_pos_err={resume_best:.1f}px)")
+        print(
+            f"resumed from {args.resume} (was epoch {prev_epoch}, val_pos_err={resume_best:.1f}px)"
+        )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
@@ -790,11 +843,13 @@ def train_loop(args):
     #     The 2-point line attempt-1 → attempt-2 is not a sweep; v0.7.1
     #     queues a proper {5e-4, 2e-3, 8e-3} grid to confirm 2e-3 is on
     #     the right shoulder.
-    HM_WEIGHT = float(os.environ.get("IPF_HM_WEIGHT", "8e-3"))  # v0.7.1 sweep winner; env override for future A/Bs
-    HM_PLAIN_NEG_REL = 0.25   # trivial backgrounds — small contribution
-    HM_HARD_NEG_REL = 1.0     # decoy cursors — full weight, primary neg signal
-    HM_NEG_REL_LEGACY = 0.5   # used when sample_type is unknown (legacy datasets)
-    CONF_WEIGHT = 2.0         # unchanged from v0.6
+    HM_WEIGHT = float(
+        os.environ.get("IPF_HM_WEIGHT", "8e-3")
+    )  # v0.7.1 sweep winner; env override for future A/Bs
+    HM_PLAIN_NEG_REL = 0.25  # trivial backgrounds — small contribution
+    HM_HARD_NEG_REL = 1.0  # decoy cursors — full weight, primary neg signal
+    HM_NEG_REL_LEGACY = 0.5  # used when sample_type is unknown (legacy datasets)
+    CONF_WEIGHT = 2.0  # unchanged from v0.6
 
     # Carry over the previous run's best so the rolling pointer (--weights-out)
     # only updates when this invocation actually beats the previous global
@@ -809,9 +864,12 @@ def train_loop(args):
         t0 = time.monotonic()
         train_conf_loss = 0.0
         train_hm_pos_loss = 0.0
-        train_hm_plain_neg_loss = 0.0; train_hm_hard_neg_loss = 0.0
-        n_train = 0; n_train_pos = 0
-        n_train_plain_neg = 0; n_train_hard_neg = 0
+        train_hm_plain_neg_loss = 0.0
+        train_hm_hard_neg_loss = 0.0
+        n_train = 0
+        n_train_pos = 0
+        n_train_plain_neg = 0
+        n_train_hard_neg = 0
         for x, target_xy, target_conf, sample_type in train_dl:
             x = x.to(device, non_blocking=True)
             target_xy = target_xy.to(device, non_blocking=True)
@@ -849,16 +907,18 @@ def train_loop(args):
             # heatmap and conf head gradients are comparable at the shared
             # backbone (see HM_WEIGHT comment above).
             hm_loss_per_b = F.binary_cross_entropy_with_logits(
-                pred_hm.squeeze(1), target_hm.squeeze(1), reduction='none'
+                pred_hm.squeeze(1), target_hm.squeeze(1), reduction="none"
             ).sum(dim=(1, 2))
             hm_pos_loss = (hm_loss_per_b * pos_mask).sum() / pos_count
             hm_plain_neg_loss = (hm_loss_per_b * plain_mask).sum() / plain_count
             hm_hard_neg_loss = (hm_loss_per_b * hard_mask).sum() / hard_count
             hm_unknown_neg_loss = (hm_loss_per_b * unknown_neg_mask).sum() / unknown_neg_count
-            hm_loss = (hm_pos_loss
-                      + HM_PLAIN_NEG_REL * hm_plain_neg_loss
-                      + HM_HARD_NEG_REL * hm_hard_neg_loss
-                      + HM_NEG_REL_LEGACY * hm_unknown_neg_loss)
+            hm_loss = (
+                hm_pos_loss
+                + HM_PLAIN_NEG_REL * hm_plain_neg_loss
+                + HM_HARD_NEG_REL * hm_hard_neg_loss
+                + HM_NEG_REL_LEGACY * hm_unknown_neg_loss
+            )
 
             # v0.5.1: soft-argmax xy_loss removed entirely. PointerNet.forward
             # no longer computes pred_xy.
@@ -887,19 +947,26 @@ def train_loop(args):
         # instead of via a wasted 8h cold-start. Reusable anchor for any future
         # loss-reduction A/B (sum vs mean vs focal, label smoothing, etc.).
         grad_diag = _measure_backbone_grad_ratio(
-            model, train_dl, device, HM_WEIGHT, CONF_WEIGHT,
-            HM_PLAIN_NEG_REL, HM_HARD_NEG_REL,
+            model,
+            train_dl,
+            device,
+            HM_WEIGHT,
+            CONF_WEIGHT,
+            HM_PLAIN_NEG_REL,
+            HM_HARD_NEG_REL,
         )
         if grad_diag is not None:
-            print(f"        [grad] hm_grad={grad_diag['hm']:.4f} "
-                  f"conf_grad={grad_diag['conf']:.4f} "
-                  f"ratio={grad_diag['ratio']:.3f} (target ~1.0)")
+            print(
+                f"        [grad] hm_grad={grad_diag['hm']:.4f} "
+                f"conf_grad={grad_diag['conf']:.4f} "
+                f"ratio={grad_diag['ratio']:.3f} (target ~1.0)"
+            )
 
         # ---- Validation: sliced metrics by sample_type ----
         model.eval()
-        slice_err_sum: dict[int, float] = {}      # heatmap+parabolic err (deployed inference path)
+        slice_err_sum: dict[int, float] = {}  # heatmap+parabolic err (deployed inference path)
         slice_err_n: dict[int, int] = {}
-        slice_fpr_pred: dict[int, int] = {}   # how many predicted positive (conf > 0.5)
+        slice_fpr_pred: dict[int, int] = {}  # how many predicted positive (conf > 0.5)
         slice_fpr_n: dict[int, int] = {}
         # Tracks how many cells exceed the deployment peak threshold — i.e.,
         # negatives that would leak through click_at.PEAK_THRESHOLD as
@@ -909,10 +976,13 @@ def train_loop(args):
         PEAK_FPR_THRESHOLD = 0.4
         slice_peak_high: dict[int, int] = {}  # how many negs had heatmap peak > PEAK_FPR_THRESHOLD
         with torch.no_grad():
-            val_conf_correct = 0; n_val = 0
+            val_conf_correct = 0
+            n_val = 0
             for x, target_xy, target_conf, sample_type in val_dl:
-                x = x.to(device); target_xy = target_xy.to(device)
-                target_conf = target_conf.to(device); sample_type = sample_type.to(device)
+                x = x.to(device)
+                target_xy = target_xy.to(device)
+                target_conf = target_conf.to(device)
+                sample_type = sample_type.to(device)
                 pred_conf_logit, pred_hm = model(x)
                 pred_conf = torch.sigmoid(pred_conf_logit)
                 pred_label = (pred_conf > 0.5).float()
@@ -932,36 +1002,50 @@ def train_loop(args):
                 target_y_px = target_xy[:, 1] * NATIVE_H
                 e_xn = hm_pred_xy_px[:, 0] - target_x_px
                 e_yn = hm_pred_xy_px[:, 1] - target_y_px
-                err_px = torch.sqrt(e_xn ** 2 + e_yn ** 2)
+                err_px = torch.sqrt(e_xn**2 + e_yn**2)
 
                 for t_id in sample_type.unique().tolist():
-                    sel = (sample_type == t_id)
-                    is_pos_type = (t_id == SAMPLE_TYPES["normal_pos"]
-                                   or t_id == SAMPLE_TYPES["edge_pos"])
+                    sel = sample_type == t_id
+                    is_pos_type = (
+                        t_id == SAMPLE_TYPES["normal_pos"] or t_id == SAMPLE_TYPES["edge_pos"]
+                    )
                     if is_pos_type:
                         pos_sel = sel & (target_conf == 1)
                         if pos_sel.any():
-                            slice_err_sum[t_id] = slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            slice_err_sum[t_id] = (
+                                slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            )
                             slice_err_n[t_id] = slice_err_n.get(t_id, 0) + int(pos_sel.sum().item())
                     elif t_id == -1:
                         # Legacy datasets: route by target_conf instead of t_id (#44).
                         pos_sel = sel & (target_conf == 1)
                         neg_sel = sel & (target_conf == 0)
                         if pos_sel.any():
-                            slice_err_sum[t_id] = slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            slice_err_sum[t_id] = (
+                                slice_err_sum.get(t_id, 0.0) + err_px[pos_sel].sum().item()
+                            )
                             slice_err_n[t_id] = slice_err_n.get(t_id, 0) + int(pos_sel.sum().item())
                         if neg_sel.any():
-                            slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[neg_sel].sum().item())
+                            slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(
+                                pred_label[neg_sel].sum().item()
+                            )
                             slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(neg_sel.sum().item())
-                            slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[neg_sel] > PEAK_FPR_THRESHOLD).sum().item())
+                            slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int(
+                                (hm_peak[neg_sel] > PEAK_FPR_THRESHOLD).sum().item()
+                            )
                     else:
                         # Negative slice (hard_neg / plain_neg): count false positives
-                        slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(pred_label[sel].sum().item())
+                        slice_fpr_pred[t_id] = slice_fpr_pred.get(t_id, 0) + int(
+                            pred_label[sel].sum().item()
+                        )
                         slice_fpr_n[t_id] = slice_fpr_n.get(t_id, 0) + int(sel.sum().item())
-                        slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int((hm_peak[sel] > PEAK_FPR_THRESHOLD).sum().item())
+                        slice_peak_high[t_id] = slice_peak_high.get(t_id, 0) + int(
+                            (hm_peak[sel] > PEAK_FPR_THRESHOLD).sum().item()
+                        )
 
         dt = time.monotonic() - t0
-        all_err_sum = sum(slice_err_sum.values()); all_err_n = sum(slice_err_n.values())
+        all_err_sum = sum(slice_err_sum.values())
+        all_err_n = sum(slice_err_n.values())
         # Legacy combined error (normal_pos + edge_pos averaged together).
         # Logged for v0.6.x baseline comparability but no longer drives
         # checkpoint selection — edge_pos labels are noisier (visible-centroid
@@ -987,38 +1071,44 @@ def train_loop(args):
             if t_id in slice_fpr_n and slice_fpr_n[t_id] > 0:
                 fpr_conf = slice_fpr_pred[t_id] / slice_fpr_n[t_id]
                 fpr_peak = slice_peak_high[t_id] / slice_fpr_n[t_id]
-                slice_lines.append(f"{name}_fpr_conf={fpr_conf*100:.1f}%_peak={fpr_peak*100:.1f}%(n={slice_fpr_n[t_id]})")
+                slice_lines.append(
+                    f"{name}_fpr_conf={fpr_conf * 100:.1f}%_peak={fpr_peak * 100:.1f}%(n={slice_fpr_n[t_id]})"
+                )
         slice_str = "  ".join(slice_lines) if slice_lines else "(legacy dataset; no slices)"
 
-        print(f"epoch {epoch:3d}/{args.epochs}  "
-              f"train_hm_pos={train_hm_pos_loss/max(1,n_train_pos):.4f} "
-              f"train_hm_plain={train_hm_plain_neg_loss/max(1,n_train_plain_neg):.4f} "
-              f"train_hm_hard={train_hm_hard_neg_loss/max(1,n_train_hard_neg):.4f} "
-              f"train_conf={train_conf_loss/n_train:.4f}  "
-              f"val_pos_err={mean_pos_err:.1f}px(normal_pos) "
-              f"val_combined={legacy_combined_pos_err:.1f}px val_conf_acc={conf_acc*100:.1f}%  "
-              f"lr={opt.param_groups[0]['lr']:.5f}  ({dt:.1f}s)")
+        print(
+            f"epoch {epoch:3d}/{args.epochs}  "
+            f"train_hm_pos={train_hm_pos_loss / max(1, n_train_pos):.4f} "
+            f"train_hm_plain={train_hm_plain_neg_loss / max(1, n_train_plain_neg):.4f} "
+            f"train_hm_hard={train_hm_hard_neg_loss / max(1, n_train_hard_neg):.4f} "
+            f"train_conf={train_conf_loss / n_train:.4f}  "
+            f"val_pos_err={mean_pos_err:.1f}px(normal_pos) "
+            f"val_combined={legacy_combined_pos_err:.1f}px val_conf_acc={conf_acc * 100:.1f}%  "
+            f"lr={opt.param_groups[0]['lr']:.5f}  ({dt:.1f}s)"
+        )
         if slice_lines:
             print(f"        {slice_str}")
 
         if mean_pos_err < pass_best:
             pass_best = mean_pos_err
-            ckpt = {"model": model.state_dict(),
-                    "epoch": epoch,
-                    "val_pos_err_px": mean_pos_err,
-                    "val_combined_pos_err_px": legacy_combined_pos_err,
-                    "val_conf_acc": conf_acc,
-                    "native_size": (NATIVE_W, NATIVE_H),
-                    "train_size": (TRAIN_W, TRAIN_H),
-                    "version": version,
-                    "architecture_version": ARCHITECTURE_VERSION,
-                    "stride_train": STRIDE_TRAIN,
-                    "metric_definition": "normal_pos_only",
-                    # Persist val bg membership so resumes measure on the
-                    # SAME held-out set, even if the dataset grows. Without
-                    # this, even the stable-hash split can drift if the
-                    # threshold rounding lands on a boundary case.
-                    "val_bg_ids": sorted(train_ds.val_bg_ids)}
+            ckpt = {
+                "model": model.state_dict(),
+                "epoch": epoch,
+                "val_pos_err_px": mean_pos_err,
+                "val_combined_pos_err_px": legacy_combined_pos_err,
+                "val_conf_acc": conf_acc,
+                "native_size": (NATIVE_W, NATIVE_H),
+                "train_size": (TRAIN_W, TRAIN_H),
+                "version": version,
+                "architecture_version": ARCHITECTURE_VERSION,
+                "stride_train": STRIDE_TRAIN,
+                "metric_definition": "normal_pos_only",
+                # Persist val bg membership so resumes measure on the
+                # SAME held-out set, even if the dataset grows. Without
+                # this, even the stable-hash split can drift if the
+                # threshold rounding lands on a boundary case.
+                "val_bg_ids": sorted(train_ds.val_bg_ids),
+            }
             # Per-best snapshot tagged with version AND val_pos_err. Always saved
             # on a within-pass new-best (even if it doesn't beat the rolling
             # global best) — eyeballing the dir shows the descent at a glance:
@@ -1036,7 +1126,8 @@ def train_loop(args):
             wo_suffix = os.path.splitext(args.weights_out)[1] or ".pt"
             err_path = os.path.join(
                 os.path.dirname(args.weights_out),
-                f"pointer_model_v{version}{pass_tag}_{mean_pos_err:.1f}px{wo_suffix}")
+                f"pointer_model_v{version}{pass_tag}_{mean_pos_err:.1f}px{wo_suffix}",
+            )
             save_checkpoint(ckpt, err_path)
             log_extras = []
             # Capture the boolean BEFORE the update so the log tag is honest
@@ -1050,8 +1141,10 @@ def train_loop(args):
             tag = "✓ saved global-best" if is_global else "↪ saved pass-best"
             print(f"  {tag} (val_pos_err={mean_pos_err:.1f}px) → " + " + ".join(log_extras))
 
-    print(f"\nfinal pass best val_pos_err: {pass_best:.1f}px  "
-          f"(rolling global best: {best_val_err:.1f}px)")
+    print(
+        f"\nfinal pass best val_pos_err: {pass_best:.1f}px  "
+        f"(rolling global best: {best_val_err:.1f}px)"
+    )
     return 0
 
 
@@ -1059,39 +1152,73 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", default=DATASET_DIR)
     p.add_argument("--weights-out", default=WEIGHTS_PATH)
-    p.add_argument("--epochs", type=int, default=15,
-                   help="v0.3.1 default 15 — overfit window observed past ep 10 on v0.3, "
-                        "augmentation should extend that but tighter T_max keeps LR "
-                        "from annealing into ultra-low values that lock in memorization")
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=15,
+        help="v0.3.1 default 15 — overfit window observed past ep 10 on v0.3, "
+        "augmentation should extend that but tighter T_max keeps LR "
+        "from annealing into ultra-low values that lock in memorization",
+    )
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--weight-decay", type=float, default=1e-3,
-                   help="v0.3.1 bumped from 1e-4 → 1e-3 to fight bg-texture overfit.")
-    p.add_argument("--workers", type=int, default=8,
-                   help="DataLoader workers; bumped from 4 to 8 in v0.3.1+ since "
-                        "train-time augmentation made data loading more CPU-heavy")
-    p.add_argument("--val-frac", type=float, default=0.10,
-                   help="fraction of bg_ids to hold out for validation (bg-level split)")
-    p.add_argument("--limit-val", type=int, default=0,
-                   help="if >0, evaluate on only N (shuffled) val samples per epoch — "
-                        "fast regression smoke during dev. Shuffles with a fixed seed "
-                        "before slicing so the slice is representative of all val "
-                        "backgrounds, not just the first.")
-    p.add_argument("--seed", type=int, default=None,
-                   help="Global RNG seed for Python random, numpy, and torch "
-                        "(default 42 if unset). Combined with --strict-determinism "
-                        "for bit-exact repeats across runs.")
-    p.add_argument("--strict-determinism", action="store_true",
-                   help="Pin cudnn.deterministic=True and torch.use_deterministic_"
-                        "algorithms(True). Slower; use for reproducibility audits.")
-    p.add_argument("--augment", action="store_true", default=True,
-                   help="enable train-time random crop + flip + photometric jitter "
-                        "(v0.3.1 default ON — disable with --no-augment for ablation)")
+    p.add_argument(
+        "--weight-decay",
+        type=float,
+        default=1e-3,
+        help="v0.3.1 bumped from 1e-4 → 1e-3 to fight bg-texture overfit.",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="DataLoader workers; bumped from 4 to 8 in v0.3.1+ since "
+        "train-time augmentation made data loading more CPU-heavy",
+    )
+    p.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.10,
+        help="fraction of bg_ids to hold out for validation (bg-level split)",
+    )
+    p.add_argument(
+        "--limit-val",
+        type=int,
+        default=0,
+        help="if >0, evaluate on only N (shuffled) val samples per epoch — "
+        "fast regression smoke during dev. Shuffles with a fixed seed "
+        "before slicing so the slice is representative of all val "
+        "backgrounds, not just the first.",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Global RNG seed for Python random, numpy, and torch "
+        "(default 42 if unset). Combined with --strict-determinism "
+        "for bit-exact repeats across runs.",
+    )
+    p.add_argument(
+        "--strict-determinism",
+        action="store_true",
+        help="Pin cudnn.deterministic=True and torch.use_deterministic_"
+        "algorithms(True). Slower; use for reproducibility audits.",
+    )
+    p.add_argument(
+        "--augment",
+        action="store_true",
+        default=True,
+        help="enable train-time random crop + flip + photometric jitter "
+        "(v0.3.1 default ON — disable with --no-augment for ablation)",
+    )
     p.add_argument("--no-augment", action="store_false", dest="augment")
-    p.add_argument("--resume", default="",
-                   help="load weights from this file before training (continues training "
-                        "instead of starting from scratch). Optimizer + LR schedule reset, "
-                        "which acts like a cosine restart.")
+    p.add_argument(
+        "--resume",
+        default="",
+        help="load weights from this file before training (continues training "
+        "instead of starting from scratch). Optimizer + LR schedule reset, "
+        "which acts like a cosine restart.",
+    )
     args = p.parse_args()
     # Set CUBLAS_WORKSPACE_CONFIG BEFORE any `torch.cuda.*` call (including
     # the device-name print at the top of train_loop, which triggers cuBLAS

@@ -61,7 +61,9 @@ def export(weights: Path, out: Path, opset: int = 17, check: bool = False) -> Pa
         try:
             import onnxruntime as ort
         except ImportError as e:
-            raise SystemExit("Install onnxruntime first: pip install 'ios-pointer-finder[onnx]'") from e
+            raise SystemExit(
+                "Install onnxruntime first: pip install 'ios-pointer-finder[onnx]'"
+            ) from e
         sess = ort.InferenceSession(str(out), providers=["CPUExecutionProvider"])
         x = np.random.randn(1, 3, TRAIN_H, TRAIN_W).astype(np.float32)
         ort_outs = sess.run(None, {"image": x})

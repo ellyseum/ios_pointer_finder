@@ -31,6 +31,8 @@ import cv2
 import numpy as np
 import torch
 
+from decode import argmax_parabolic_native, parabolic_offset
+
 # PointerNet definition lives in train.py for now — re-export here as part of
 # the public surface so users don't need to import from train internals.
 from train import (
@@ -41,7 +43,6 @@ from train import (
     TRAIN_W,
     PointerNet,
 )
-from decode import argmax_parabolic_native, parabolic_offset
 
 PathLike = str | os.PathLike | Path
 
@@ -122,6 +123,7 @@ class PointerFinder:
         ckpt_v = config.get("architecture_version")
         if ckpt_v is None:
             import warnings
+
             warnings.warn(
                 "Checkpoint has no architecture_version field — likely a "
                 "pre-v0.7 weight file. Loading anyway, but predictions may "

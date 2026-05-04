@@ -31,18 +31,20 @@ JPEG_GLOB = "/tmp/phone-[0-9]*.jpg"
 DEFAULT_OUT = "./eval_out/grid.jpg"
 
 
-def overlay_grid(img_native: np.ndarray,
-                 major: int = 50,
-                 minor: int = 25,
-                 minor_color=(80, 80, 80),
-                 major_color=(0, 255, 255),
-                 label_color=(255, 255, 255),
-                 label_bg=(0, 0, 0),
-                 opacity: float = 0.55) -> np.ndarray:
+def overlay_grid(
+    img_native: np.ndarray,
+    major: int = 50,
+    minor: int = 25,
+    minor_color=(80, 80, 80),
+    major_color=(0, 255, 255),
+    label_color=(255, 255, 255),
+    label_bg=(0, 0, 0),
+    opacity: float = 0.55,
+) -> np.ndarray:
     """Draw a CSS-px grid on a native-resolution image. Returns a copy."""
     h, w = img_native.shape[:2]
-    sx = w / CSS_W   # ~2.259
-    sy = h / CSS_H   # ~2.259
+    sx = w / CSS_W  # ~2.259
+    sy = h / CSS_H  # ~2.259
     overlay = img_native.copy()
 
     # minor gridlines
@@ -107,14 +109,18 @@ def _newest_finalized_ring_frame() -> str | None:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("snap", nargs="?", help="path to JPG; default = newest ring frame")
     p.add_argument("--out", default=DEFAULT_OUT)
     p.add_argument("--major", type=int, default=50)
     p.add_argument("--minor", type=int, default=25)
-    p.add_argument("--full-res", action="store_true",
-                   help="save at native resolution instead of half (default half)")
+    p.add_argument(
+        "--full-res",
+        action="store_true",
+        help="save at native resolution instead of half (default half)",
+    )
     args = p.parse_args()
 
     snap = args.snap or _newest_finalized_ring_frame()
@@ -129,8 +135,7 @@ def main() -> int:
 
     out = overlay_grid(img, major=args.major, minor=args.minor)
     if not args.full_res:
-        out = cv2.resize(out, (out.shape[1] // 2, out.shape[0] // 2),
-                         interpolation=cv2.INTER_AREA)
+        out = cv2.resize(out, (out.shape[1] // 2, out.shape[0] // 2), interpolation=cv2.INTER_AREA)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     cv2.imwrite(args.out, out, [cv2.IMWRITE_JPEG_QUALITY, 92])

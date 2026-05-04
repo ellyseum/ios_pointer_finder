@@ -19,6 +19,7 @@ golden via tools/build_golden.py, visually inspect the new contact
 sheet, and commit the new golden in a separate commit before this test
 file's expected behavior changes.
 """
+
 from __future__ import annotations
 
 import os
@@ -97,7 +98,7 @@ def _render_contact_sheet() -> np.ndarray:
         sh, sw = sprite_alpha.shape
         px0 = max(0, cx - sw // 2)
         py0 = max(0, cy - sh // 2)
-        patch = bg[py0:py0 + sh, px0:px0 + sw]
+        patch = bg[py0 : py0 + sh, px0 : px0 + sw]
         color = S.pick_cursor_color(patch)
         composed, _ = S.composite(bg, sprite_alpha, cx, cy, color)
 
@@ -105,12 +106,12 @@ def _render_contact_sheet() -> np.ndarray:
         cy0 = max(0, cy - CELL // 2)
         cx0 = min(cx0, bw - CELL)
         cy0 = min(cy0, bh - CELL)
-        cell = composed[cy0:cy0 + CELL, cx0:cx0 + CELL]
+        cell = composed[cy0 : cy0 + CELL, cx0 : cx0 + CELL]
 
         r, c = cell_idx // COLS, cell_idx % COLS
         yy = r * (CELL + PAD) + PAD
         xx = c * (CELL + PAD) + PAD
-        canvas[yy:yy + CELL, xx:xx + CELL] = cell
+        canvas[yy : yy + CELL, xx : xx + CELL] = cell
     return canvas
 
 
@@ -120,7 +121,7 @@ def _split_cells(sheet: np.ndarray) -> list[np.ndarray]:
         r, c = cell_idx // COLS, cell_idx % COLS
         yy = r * (CELL + PAD) + PAD
         xx = c * (CELL + PAD) + PAD
-        cells.append(sheet[yy:yy + CELL, xx:xx + CELL])
+        cells.append(sheet[yy : yy + CELL, xx : xx + CELL])
     return cells
 
 
@@ -133,9 +134,7 @@ def test_synth_contact_sheet_matches_golden():
     assert GOLDEN_PATH.exists(), f"missing golden: {GOLDEN_PATH}"
     golden = cv2.imread(str(GOLDEN_PATH))
     fresh = _render_contact_sheet()
-    assert fresh.shape == golden.shape, (
-        f"shape drift: fresh={fresh.shape} golden={golden.shape}"
-    )
+    assert fresh.shape == golden.shape, f"shape drift: fresh={fresh.shape} golden={golden.shape}"
 
     fresh_cells = _split_cells(fresh)
     golden_cells = _split_cells(golden)
@@ -163,8 +162,7 @@ def test_procedural_sprite_is_circular():
     alpha, _ = S.make_pointer_sprite(diameter)
     # Threshold at 50% of peak alpha to get the sprite footprint
     mask = (alpha > (alpha.max() * 0.5)).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     assert contours, "no contour in procedural sprite alpha"
     c = max(contours, key=cv2.contourArea)
     area = cv2.contourArea(c)
