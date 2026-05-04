@@ -1,5 +1,5 @@
 {
-  "_doc": "Ground truth for real-frame regression fixtures. bg-00000 and bg-00009 are hand-annotated; others remain bootstrapped from v0.4.0 22.9px predictions (~1-3px noise expected since v0.4 returns identical predictions on the parked-cursor frames). v0.7.1 should hand-annotate the remaining 6 + add positional-diversity fixtures.",
+  "_doc": "Ground truth for real-frame regression fixtures. All 8 are now hand-annotated: bg-00000 was hand-clicked at native resolution; bg-00001/02/05/06/07/08/09 were confirmed via the v0.7.1 model-prefill + snap-to-centroid annotation tool (prediction visually verified). Sources: 'hand' for confirmed; 'absent' for skipped (none currently).",
   "_source_weights": "pointer_model_v0.4.0_22.9px.pt",
   "frames": {
     "bg-00000.png": {
@@ -15,46 +15,52 @@
       "v04_err_px": 7.280109889280518
     },
     "bg-00001.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 652,
+      "y": 1430,
       "confidence": 0.999828577041626,
       "heatmap_peak": 0.9999933242797852,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed via model-prefill annotate tool: v0.7.1 8e-3 ckpt prediction visually verified as on-cursor."
     },
     "bg-00002.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 652,
+      "y": 1430,
       "confidence": 0.999758780002594,
       "heatmap_peak": 0.9999905824661255,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed via model-prefill annotate tool: v0.7.1 8e-3 ckpt prediction visually verified as on-cursor."
     },
     "bg-00005.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 653,
+      "y": 1430,
       "confidence": 0.9998569488525391,
       "heatmap_peak": 0.9999967813491821,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed via model-prefill annotate tool: v0.7.1 8e-3 ckpt prediction visually verified as on-cursor."
     },
     "bg-00006.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 651,
+      "y": 1430,
       "confidence": 0.9997947812080383,
       "heatmap_peak": 1.0,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed via model-prefill annotate tool: v0.7.1 8e-3 ckpt prediction visually verified as on-cursor."
     },
     "bg-00007.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 651,
+      "y": 1432,
       "confidence": 0.9979401230812073,
       "heatmap_peak": 0.999794065952301,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed via model-prefill annotate tool: v0.7.1 8e-3 ckpt prediction visually verified as on-cursor."
     },
     "bg-00008.png": {
-      "x": 654.0,
-      "y": 1431.0,
+      "x": 651,
+      "y": 1430,
       "confidence": 0.9994416832923889,
       "heatmap_peak": 0.9999996423721313,
-      "source": "v0.4-bootstrap"
+      "source": "hand",
+      "note": "Hand-confirmed via model-prefill annotate tool: v0.7.1 8e-3 ckpt prediction visually verified as on-cursor."
     },
     "bg-00009.png": {
       "x": 654,

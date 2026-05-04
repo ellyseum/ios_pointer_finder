@@ -48,11 +48,19 @@ EXPECTED_FRAMES = [
 HARD_GT_FRAME = "bg-00000.png"
 HARD_GT_TOLERANCE_PX = 50.0
 
-# Soft regression gates for additional hand-annotated fixtures. Generous
-# tolerances catch *further* regressions without forcing v0.7.1 to solve
-# every existing failure mode. v0.7 16.5px ckpt errs by 27 px on bg-00009;
-# 60 px lets that through but flags any future drift past it.
+# Soft regression gates for additional hand-annotated fixtures. All 8
+# fixtures are now hand-confirmed (bg-00000 click-annotated, the others
+# via the model-prefill annotation tool). Generous tolerances catch
+# *further* regressions without forcing every future model to nail every
+# frame. The bg-00009 outlier gets a wider tolerance since v0.7.1's
+# 8e-3 ckpt is currently ~14 px off there (was 27 px in v0.7.0).
 SOFT_GT_GATES = {
+    "bg-00001.png": 40.0,
+    "bg-00002.png": 40.0,
+    "bg-00005.png": 40.0,
+    "bg-00006.png": 40.0,
+    "bg-00007.png": 40.0,
+    "bg-00008.png": 40.0,
     "bg-00009.png": 60.0,
 }
 
