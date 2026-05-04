@@ -1,4 +1,4 @@
-# Model Card — ios_pointer_finder v0.7.0
+# Model Card — ios_pointer_finder v0.7.1
 
 A 338K-parameter convolutional network that predicts the on-screen position of
 the iPhone Pointer-Control cursor from a single screen-capture image.
@@ -15,8 +15,9 @@ the iPhone Pointer-Control cursor from a single screen-capture image.
 | Train resolution             | 497 × 1080                                       |
 | Inference latency (RTX 5080) | 10 ms                                            |
 | Throughput                   | 95 fps                                           |
-| Validation pos-error         | TBD (cold-start retrain pending — see Roadmap). v0.5 reached 18.9 px on the same dataset before the v0.6.0 fixes landed. |
-| Cursor-free FPR              | <2% at conf ≥ 0.5 (v0.5 measurement; re-measured after v0.6.0 retrain) |
+| Validation pos-error (synth) | 20.8 px (v0.7.1, single-pass cold-start; warm-restart cycles deferred). v0.7.0 reached 16.5 px through full SGDR. |
+| Real-frame deployment gate   | 8 / 8 bundled fixtures pass `conf ≥ 0.5 ∧ peak ≥ 0.4`. Hand-annotated: bg-00000 = 6.4 px, bg-00009 = 14 px. |
+| Cursor-free FPR              | <2% at conf ≥ 0.5 on synth held-out backgrounds                |
 | Calibration device           | iPhone 16 Pro Max (`iPhone17,2`), iOS 26.3.1     |
 | Native capture resolution    | 994 × 2160 (iPhone 16 Pro Max AirPlay H264 stream) |
 | Weights license              | CC-BY-4.0                                        |
