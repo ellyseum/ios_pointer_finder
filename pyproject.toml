@@ -103,8 +103,14 @@ select = [
     "SIM", # flake8-simplify
 ]
 ignore = [
-    "E501",  # line too long (handled by formatter)
-    "B008",  # function call in default arg (PyTorch idiom)
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default arg (PyTorch idiom)
+    "E701",   # multiple-statements-on-one-line-colon (project style: tight one-liners)
+    "E702",   # multiple-statements-on-one-line-semicolon (project style: counter inits)
+    "E402",   # module-import-not-at-top (project style: lazy / conditional imports)
+    "SIM108", # if/else → ternary (sometimes less readable for the project's branches)
+    "SIM102", # collapsible-if (sometimes the explicit nesting is clearer)
+    "B905",   # zip-without-strict (Python 3.10 baseline; not always wanted)
 ]
 
 [tool.ruff.lint.per-file-ignores]
